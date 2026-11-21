@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Bot,
   Building2,
   Calendar,
   CheckCircle2,
@@ -10,6 +11,7 @@ import {
   Lock,
   Plus,
   QrCode,
+  ScanLine,
   ShieldAlert,
   ShieldCheck,
   Upload,
@@ -17,6 +19,7 @@ import {
 } from 'lucide-react';
 import { QrCodeDisplay } from './QrCodeDisplay';
 import {
+  AutonomousLifecycleEvent,
   BengaluruLocation,
   BookingRecord,
   DetailedProviderType,
@@ -63,6 +66,7 @@ interface ProviderPortalViewProps {
   bookings: BookingRecord[];
   settlements: HostSettlementRecord[];
   incidents: IncidentRecord[];
+  lifecycleEvents: AutonomousLifecycleEvent[];
   onRegisterProvider: (payload: {
     name: string;
     contactName: string;
@@ -95,6 +99,14 @@ interface ProviderPortalViewProps {
     decision: 'approve' | 'reject'
   ) => Promise<void>;
   onReportOverstay: (bookingId: string, overstayMinutes: number) => Promise<void>;
+  onHostScanDriverQr: (payload: {
+    scannedInput: string;
+    expectedFacilityId?: string;
+    arrivalMinutesLate?: number;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  onRunLifecycleCheck: (bookingId: string, requestedExtensionMinutes?: number) => Promise<void>;
+  onConfirmDeparture: (bookingId: string) => Promise<void>;
+  onCompleteClearance: (spaceId: string) => Promise<void>;
   onSubmitIncident: (payload: {
     facilityId?: string;
     bookingId?: string;
@@ -147,6 +159,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
   bookings,
   settlements,
   incidents,
+  lifecycleEvents,
   onRegisterProvider,
   onUploadEvidence,
   onAddFacility,
@@ -155,6 +168,10 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
   onWithdrawAvailability,
   onDecideExtension,
   onReportOverstay,
+  onHostScanDriverQr,
+  onRunLifecycleCheck,
+  onConfirmDeparture,
+  onCompleteClearance,
   onSubmitIncident,
 }) => {
   const matchedProvider = useMemo(
@@ -242,10 +259,13 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
     activeSpace?.restrictions.join(', ') || ''
   );
 
-  // Incident state
+  // Incident & Host Gate Scanner state
   const [incCategory, setIncCategory] = useState<IncidentRecord['category']>('vehicle_overstay');
   const [incSeverity, setIncSeverity] = useState<IncidentRecord['severity']>('medium');
   const [incDesc, setIncDesc] = useState('');
+  const [scannerInput, setScannerInput] = useState('');
+  const [scannerBusy, setScannerBusy] = useState(false);
+  const [scannerFeedback, setScannerFeedback] = useState<string | null>(null);
 
   const ownFacIds = new Set(ownFacilities.map((f) => f.id));
   const ownBookings = bookings.filter((b) => ownFacIds.has(b.facilityId));
@@ -1004,185 +1024,393 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
         </div>
       )}
 
-      {/* TAB 3: BOOKING MANAGEMENT, EXTENSION APPROVAL & SLOT WITHDRAWALS */}
+      {/* TAB 3: SINGLE HOST SCANNER, LIVE BAY OCCUPANCY, EXTENSION APPROVALS & BOOKINGS */}
       {subTab === 'bookings' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Extension Approval Queue + Future Slot Withdrawal */}
-          <section className="space-y-6 lg:col-span-5">
-            <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
+        <div className="space-y-6">
+          {/* Top Row: Single Host Gate Scanner Terminal + Live Bay Occupancy & Clearance Board */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {/* Single Host Scanner Terminal (Entry Point) */}
+            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-5">
               <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                <Clock className="h-4 w-4 text-[#C83709]" />
-                <span>Extension Approval Queue ({pendingExtensions.length})</span>
+                <ScanLine className="h-5 w-5 text-[#047857]" />
+                <h2>Single Host Entry Scanner</h2>
               </div>
               <p className="mt-0.5 text-xs text-[#4B5563]">
-                Approve or decline extension requests safely without displacing next bookings.
+                Your single kiosk/guard scanner reads each arriving driver&apos;s Booking QR pass or Gate PIN, verifies their plate, sets booking to <span className="font-mono font-semibold">checked-in</span>, and marks the bay <span className="font-mono font-semibold">OCCUPIED</span>.
               </p>
 
-              <div className="mt-4 space-y-3">
-                {pendingExtensions.length === 0 ? (
-                  <div className="rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-4 text-xs text-[#4B5563]">
-                    No pending extension requests right now.
-                  </div>
-                ) : (
-                  pendingExtensions.map(({ bk, req }) => (
-                    <div
-                      key={req.id}
-                      className="rounded-xl border border-amber-200 bg-[#FFF8F4] p-3.5 text-xs"
-                    >
-                      <div className="font-bold text-[#111827]">
-                        {bk.id} · {bk.spaceCode} ({bk.driverName})
-                      </div>
-                      <div className="mt-1 text-[#374151]">
-                        Extend <span className="font-mono">{fmt(bk.endMin)}</span> →{' '}
-                        <span className="font-mono font-bold text-[#047857]">
-                          {fmt(req.requestedEndMin)}
-                        </span>{' '}
-                        (+₹{req.additionalTotalInr})
-                      </div>
-                      <div className="mt-1 text-[11px] text-[#4B5563]">{req.reason}</div>
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void onDecideExtension(bk.id, req.id, 'approve')}
-                          className="flex items-center gap-1 rounded-lg bg-[#047857] px-3 py-1.5 font-bold text-white"
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          <span>Approve</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void onDecideExtension(bk.id, req.id, 'reject')}
-                          className="flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-3 py-1.5 font-bold text-rose-700"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          <span>Decline</span>
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
-              <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                <ShieldAlert className="h-4 w-4 text-rose-600" />
-                <span>Withdraw Future Availability</span>
-              </div>
-              <p className="mt-0.5 text-xs text-[#4B5563]">
-                Blocks future bookings and notifies any affected drivers with free rebooking or 100% refund options.
-              </p>
-
-              {activeSpace && (
-                <div className="mt-4 space-y-3">
-                  <select
-                    value={activeSpace.id}
-                    onChange={(e) => setSelectedSpaceId(e.target.value)}
-                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs font-bold text-[#111827]"
-                  >
-                    {ownSpaces.map((sp) => (
-                      <option key={sp.id} value={sp.id}>
-                        {sp.spaceCode}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="flex items-center gap-2 text-xs">
-                    <input
-                      type="number"
-                      min={6}
-                      max={22}
-                      value={blockStartHour}
-                      onChange={(e) => setBlockStartHour(Number(e.target.value))}
-                      className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
-                    />
-                    <span>to</span>
-                    <input
-                      type="number"
-                      min={7}
-                      max={23}
-                      value={blockEndHour}
-                      onChange={(e) => setBlockEndHour(Number(e.target.value))}
-                      className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
-                    />
-                  </div>
-                  <input
-                    type="text"
-                    value={withdrawReason}
-                    onChange={(e) => setWithdrawReason(e.target.value)}
-                    placeholder="Reason for withdrawal"
-                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void onWithdrawAvailability(activeSpace.id, {
-                        startMin: blockStartHour * 60,
-                        endMin: blockEndHour * 60,
-                        reason: withdrawReason,
-                      })
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!scannerInput.trim()) return;
+                  setScannerBusy(true);
+                  setScannerFeedback(null);
+                  try {
+                    const res = await onHostScanDriverQr({
+                      scannedInput: scannerInput,
+                    });
+                    if (res.ok) {
+                      setScannerFeedback('Verified entry! Booking checked in and bay marked OCCUPIED.');
+                      setScannerInput('');
+                    } else {
+                      setScannerFeedback(res.error || 'Verification failed.');
                     }
-                    className="w-full rounded-xl bg-rose-700 px-4 py-2 text-xs font-bold text-white hover:bg-rose-800"
-                  >
-                    Withdraw Slot & Notify Drivers
-                  </button>
+                  } finally {
+                    setScannerBusy(false);
+                  }
+                }}
+                className="mt-4 space-y-2.5"
+              >
+                <input
+                  type="text"
+                  value={scannerInput}
+                  onChange={(e) => setScannerInput(e.target.value)}
+                  placeholder="Paste driver QR JSON/token, Gate PIN (PKP-...), or Booking ID"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 font-mono text-xs text-[#111827]"
+                />
+                <button
+                  type="submit"
+                  disabled={scannerBusy || !scannerInput.trim()}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#047857] px-4 py-2 text-xs font-bold text-white hover:bg-[#065F46] disabled:opacity-50"
+                >
+                  <QrCode className="h-4 w-4" />
+                  <span>{scannerBusy ? 'Verifying Driver Pass...' : 'Verify Driver QR & Open Gate'}</span>
+                </button>
+              </form>
+
+              {scannerFeedback && (
+                <div className="mt-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
+                  {scannerFeedback}
                 </div>
               )}
-            </div>
-          </section>
 
-          {/* Provider Bookings List */}
-          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
-            <h2 className="font-display text-lg font-bold text-[#111827]">
-              Facility Bookings ({ownBookings.length})
-            </h2>
-            <div className="mt-4 space-y-3">
-              {ownBookings.map((bk) => (
-                <div
-                  key={bk.id}
-                  className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4 text-xs"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-mono font-bold text-[#111827]">
-                      {bk.id} · {bk.spaceCode}
-                    </span>
-                    <span className="font-semibold capitalize text-[#047857]">
-                      {bk.status} · {bk.paymentStatus}
-                    </span>
+              {/* Quick-Scan Arriving Confirmed Bookings */}
+              {(() => {
+                const arriving = ownBookings.filter((b) => b.status === 'confirmed');
+                if (arriving.length === 0) return null;
+                return (
+                  <div className="mt-4 border-t border-black/[0.06] pt-3">
+                    <div className="text-[11px] font-bold uppercase tracking-wide text-[#4B5563]">
+                      Arriving Confirmed Passes ({arriving.length})
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {arriving.slice(0, 3).map((ab) => (
+                        <div
+                          key={ab.id}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-black/[0.06] bg-[#F8F7F4] px-3 py-2 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-bold text-[#111827]">
+                              {ab.driverName} · {ab.vehiclePlate || ab.vehicleLabel}
+                            </div>
+                            <div className="font-mono text-[11px] text-[#4B5563]">
+                              {ab.spaceCode} · PIN {ab.accessCode}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={scannerBusy}
+                            onClick={async () => {
+                              setScannerBusy(true);
+                              try {
+                                await onHostScanDriverQr({
+                                  scannedInput: ab.qrPassToken || ab.accessCode,
+                                  expectedFacilityId: ab.facilityId,
+                                });
+                              } finally {
+                                setScannerBusy(false);
+                              }
+                            }}
+                            className="whitespace-nowrap shrink-0 rounded-lg bg-[#111827] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-black"
+                          >
+                            Scan Driver QR
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
+
+            {/* Live Bay Occupancy, Overstay Detection & Turnaround Buffer Board */}
+            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
+                  <Bot className="h-5 w-5 text-[#4338CA]" />
+                  <h2>Live Bay Occupancy &amp; Clearance Board</h2>
+                </div>
+                <span className="text-xs text-[#4B5563]">
+                  Spaces never reopen on timer alone — requires confirmed exit + 15m buffer
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {ownSpaces.map((sp) => {
+                  const occ = sp.occupancyState || 'AVAILABLE';
+                  const activeBk = ownBookings.find(
+                    (b) =>
+                      b.id === sp.activeOccupancyBookingId ||
+                      (b.spaceId === sp.id &&
+                        (b.status === 'checked-in' || b.status === 'occupied'))
+                  );
+                  const stateTone =
+                    occ === 'OVERSTAY'
+                      ? 'border-rose-300 bg-rose-50/70'
+                      : occ === 'DEPARTURE_PENDING'
+                      ? 'border-amber-300 bg-amber-50/70'
+                      : occ === 'CLEARANCE'
+                      ? 'border-indigo-300 bg-indigo-50/70'
+                      : occ === 'OCCUPIED'
+                      ? 'border-emerald-300 bg-emerald-50/60'
+                      : 'border-black/[0.08] bg-[#F8F7F4]';
+
+                  return (
+                    <div key={sp.id} className={`rounded-xl border p-3.5 text-xs ${stateTone}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono font-bold text-[#111827]">{sp.spaceCode}</span>
+                        <span className="font-mono text-[11px] font-bold text-[#4338CA]">{occ}</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-[#374151]">
+                        {sp.lastOccupancyEvent || 'Ready for bookings'}
+                      </div>
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        {activeBk &&
+                          (occ === 'OCCUPIED' || occ === 'OVERSTAY' || occ === 'DEPARTURE_PENDING') && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void onRunLifecycleCheck(activeBk.id, 30)}
+                                className="rounded-lg border border-indigo-300 bg-white px-2.5 py-1 text-[11px] font-bold text-[#4338CA] hover:bg-indigo-50"
+                              >
+                                Run 7-Step Overstay Agent
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void onConfirmDeparture(activeBk.id)}
+                                className="rounded-lg bg-[#047857] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#065F46]"
+                              >
+                                Confirm Vacancy &rarr; 15m Buffer
+                              </button>
+                            </>
+                          )}
+                        {occ === 'CLEARANCE' && (
+                          <button
+                            type="button"
+                            onClick={() => void onCompleteClearance(sp.id)}
+                            className="rounded-lg bg-[#111827] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
+                          >
+                            Complete Buffer &rarr; Reopen Bay
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {lifecycleEvents.length > 0 && (
+                <div className="mt-4 border-t border-black/[0.06] pt-3 text-xs">
+                  <div className="font-bold text-[#111827]">
+                    Latest Autonomous Agent Decision:
                   </div>
                   <div className="mt-1 text-[#374151]">
-                    Driver: <strong>{bk.driverName}</strong> · {bk.vehicleLabel} ·{' '}
-                    <span className="font-mono">
-                      {fmt(bk.startMin)}–{fmt(bk.endMin)}
-                    </span>
+                    <span className="font-mono font-bold text-[#4338CA]">
+                      {lifecycleEvents[0].spaceCode} ({lifecycleEvents[0].resultingOccupancyState}):
+                    </span>{' '}
+                    {lifecycleEvents[0].outcomeSummary}
                   </div>
-                  {bk.hostExceptionFlagged && (
-                    <div className="mt-1.5 font-semibold text-indigo-800">
-                      Protected Exception: Overlaps new owner block (awaiting review).
+                </div>
+              )}
+            </section>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {/* Extension Approval Queue + Future Slot Withdrawal */}
+            <section className="space-y-6 lg:col-span-5">
+              <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
+                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
+                  <Clock className="h-4 w-4 text-[#C83709]" />
+                  <span>Extension Approval Queue ({pendingExtensions.length})</span>
+                </div>
+                <p className="mt-0.5 text-xs text-[#4B5563]">
+                  Approve or decline extension requests safely without displacing next bookings.
+                </p>
+
+                <div className="mt-4 space-y-3">
+                  {pendingExtensions.length === 0 ? (
+                    <div className="rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-4 text-xs text-[#4B5563]">
+                      No pending extension requests right now.
                     </div>
+                  ) : (
+                    pendingExtensions.map(({ bk, req }) => (
+                      <div
+                        key={req.id}
+                        className="rounded-xl border border-amber-200 bg-[#FFF8F4] p-3.5 text-xs"
+                      >
+                        <div className="font-bold text-[#111827]">
+                          {bk.id} · {bk.spaceCode} ({bk.driverName})
+                        </div>
+                        <div className="mt-1 text-[#374151]">
+                          Extend <span className="font-mono">{fmt(bk.endMin)}</span> →{' '}
+                          <span className="font-mono font-bold text-[#047857]">
+                            {fmt(req.requestedEndMin)}
+                          </span>{' '}
+                          (+₹{req.additionalTotalInr})
+                        </div>
+                        <div className="mt-1 text-[11px] text-[#4B5563]">{req.reason}</div>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void onDecideExtension(bk.id, req.id, 'approve')}
+                            className="flex items-center gap-1 rounded-lg bg-[#047857] px-3 py-1.5 font-bold text-white"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDecideExtension(bk.id, req.id, 'reject')}
+                            className="flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-3 py-1.5 font-bold text-rose-700"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            <span>Decline</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))
                   )}
-                  {bk.overstayStatus === 'flagged_overstay' && (
-                    <div className="mt-1.5 font-semibold text-rose-700">
-                      Overstay Flagged (+{bk.overstayMinutes}m · Surcharge ₹{bk.overstayPenaltyInr}) — downstream bookings protected.
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
+                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
+                  <ShieldAlert className="h-4 w-4 text-rose-600" />
+                  <span>Withdraw Future Availability</span>
+                </div>
+                <p className="mt-0.5 text-xs text-[#4B5563]">
+                  Blocks future bookings and notifies any affected drivers with free rebooking or 100% refund options.
+                </p>
+
+                {activeSpace && (
+                  <div className="mt-4 space-y-3">
+                    <select
+                      value={activeSpace.id}
+                      onChange={(e) => setSelectedSpaceId(e.target.value)}
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs font-bold text-[#111827]"
+                    >
+                      {ownSpaces.map((sp) => (
+                        <option key={sp.id} value={sp.id}>
+                          {sp.spaceCode}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-2 text-xs">
+                      <input
+                        type="number"
+                        min={6}
+                        max={22}
+                        value={blockStartHour}
+                        onChange={(e) => setBlockStartHour(Number(e.target.value))}
+                        className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
+                      />
+                      <span>to</span>
+                      <input
+                        type="number"
+                        min={7}
+                        max={23}
+                        value={blockEndHour}
+                        onChange={(e) => setBlockEndHour(Number(e.target.value))}
+                        className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
+                      />
                     </div>
-                  )}
-                  {(bk.status === 'checked-in' ||
-                    bk.status === 'occupied' ||
-                    bk.status === 'confirmed') &&
-                    bk.overstayStatus !== 'flagged_overstay' && (
-                      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void onReportOverstay(bk.id, 45)}
-                          className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold text-rose-700 hover:bg-rose-50"
-                        >
-                          Flag Overstay (+45m) &amp; Protect Next Rider
-                        </button>
+                    <input
+                      type="text"
+                      value={withdrawReason}
+                      onChange={(e) => setWithdrawReason(e.target.value)}
+                      placeholder="Reason for withdrawal"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void onWithdrawAvailability(activeSpace.id, {
+                          startMin: blockStartHour * 60,
+                          endMin: blockEndHour * 60,
+                          reason: withdrawReason,
+                        })
+                      }
+                      className="w-full rounded-xl bg-rose-700 px-4 py-2 text-xs font-bold text-white hover:bg-rose-800"
+                    >
+                      Withdraw Slot & Notify Drivers
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Provider Bookings List */}
+            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
+              <h2 className="font-display text-lg font-bold text-[#111827]">
+                Facility Bookings ({ownBookings.length})
+              </h2>
+              <div className="mt-4 space-y-3">
+                {ownBookings.map((bk) => (
+                  <div
+                    key={bk.id}
+                    className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono font-bold text-[#111827]">
+                        {bk.id} · {bk.spaceCode}
+                      </span>
+                      <span className="font-semibold capitalize text-[#047857]">
+                        {bk.status} · {bk.paymentStatus}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[#374151]">
+                      Driver: <strong>{bk.driverName}</strong> · {bk.vehicleLabel} ·{' '}
+                      <span className="font-mono">
+                        {fmt(bk.startMin)}–{fmt(bk.endMin)}
+                      </span>
+                    </div>
+                    {bk.hostExceptionFlagged && (
+                      <div className="mt-1.5 font-semibold text-indigo-800">
+                        Protected Exception: Overlaps new owner block (awaiting review).
                       </div>
                     )}
-                </div>
-              ))}
-            </div>
-          </section>
+                    {bk.overstayStatus === 'flagged_overstay' && (
+                      <div className="mt-1.5 font-semibold text-rose-700">
+                        Overstay Flagged (+{bk.overstayMinutes}m · Surcharge ₹{bk.overstayPenaltyInr}) — downstream bookings protected.
+                      </div>
+                    )}
+                    {(bk.status === 'checked-in' ||
+                      bk.status === 'occupied' ||
+                      bk.status === 'confirmed') && (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void onRunLifecycleCheck(bk.id, 30)}
+                            className="rounded-lg border border-indigo-300 bg-white px-3 py-1.5 font-bold text-[#4338CA] hover:bg-indigo-50"
+                          >
+                            Run 7-Step Lifecycle Agent
+                          </button>
+                          {bk.overstayStatus !== 'flagged_overstay' && (
+                            <button
+                              type="button"
+                              onClick={() => void onReportOverstay(bk.id, 45)}
+                              className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold text-rose-700 hover:bg-rose-50"
+                            >
+                              Flag Overstay (+45m) &amp; Protect Next Rider
+                            </button>
+                          )}
+                        </div>
+                      )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
         </div>
       )}
 

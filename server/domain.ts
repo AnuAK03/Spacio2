@@ -1,5 +1,7 @@
 import {
   AdminAnalytics,
+  AutonomousLifecycleEvent,
+  AutonomousLifecycleStep,
   AvailabilityWithdrawal,
   BengaluruLocation,
   BookingRecord,
@@ -11,6 +13,7 @@ import {
   DriverProfile,
   EvidenceRequirement,
   ExtensionAlternative,
+  ExtensionOffer,
   ExtensionRequest,
   Facility,
   HostSettlementRecord,
@@ -20,11 +23,13 @@ import {
   PaymentOrder,
   PaymentWebhookEvent,
   PoolingStrategyMetrics,
+  PrepaidWallet,
   PrivateDocumentRecord,
   ProviderRecord,
   ProviderType,
   ProviderVerificationStatus,
   RefundRecord,
+  SpaceOccupancyState,
   SpacePublicationStatus,
   TransactionHistoryItem,
   UserReportRecord,
@@ -33,6 +38,7 @@ import {
   VehicleProfile,
   VehicleType,
   VerificationStatus,
+  WalletLedgerItem,
   WheelerCategory,
   WorkspaceSnapshot,
 } from '../src/types/parkpool';
@@ -173,33 +179,6 @@ export function calcGeoMeters(lat1: number, lng1: number, lat2: number, lng2: nu
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.18);
 }
-
-export const DEMO_USERS: Record<UserRole, UserSession> = {
-  driver: {
-    id: 'USR-DRV-01',
-    name: 'Aarav Sharma',
-    email: 'aarav.sharma@bengaluru.in',
-    role: 'driver',
-    organization: 'Bengaluru Commuter · Tata Harrier EV',
-    accentHex: '#C83709',
-  },
-  host: {
-    id: 'USR-HST-02',
-    name: 'Raghavendra K.',
-    email: 'raghavendra.host@parkpool.in',
-    role: 'host',
-    organization: 'NorthGate & Lane 4 Partner Pool',
-    accentHex: '#047857',
-  },
-  admin: {
-    id: 'USR-ADM-03',
-    name: 'Ananya Ops',
-    email: 'ananya.ops@parkpool.in',
-    role: 'admin',
-    organization: 'Compliance & Operations Command',
-    accentHex: '#4338CA',
-  },
-};
 
 function defaultOperationalChecks(passed: boolean, inspectorId?: string): OperationalCheckRecord {
   return {
@@ -1840,6 +1819,81 @@ class ParkPoolStore {
         '10:55Z Checked Out & Settled',
       ],
     },
+    {
+      id: 'BK-2026-4098',
+      spaceId: 'BAY-MG1',
+      facilityId: 'FAC-07',
+      facilityName: 'Church Street Metro Garage',
+      spaceCode: 'Church St Level 1 (EV)',
+      driverName: 'Aarav Sharma',
+      driverEmail: 'aarav.sharma@bengaluru.in',
+      driverLicense: 'KA04 20210048192',
+      vehicleId: 'VEH-SUV-01',
+      vehicleLabel: 'Tata Harrier EV (SUV)',
+      vehiclePlate: 'KA-04-MN-8821',
+      startMin: 14 * 60,
+      endMin: 16 * 60,
+      bufferMinutes: 15,
+      status: 'cancelled',
+      baseAmountInr: 160,
+      platformFeeInr: 16,
+      gstInr: 32,
+      totalAmountInr: 208,
+      accessCode: 'PKP-871-M1',
+      entranceLabel: 'Church Street Valet Entry',
+      createdAt: '2026-11-18T11:20:00Z',
+      lateArrivalPolicy: {
+        graceMinutes: 15,
+        forfeitAfterMinutes: 40,
+        summary: 'Full refund issued on schedule change 2h before slot start.',
+      },
+      extensionRequests: [],
+      paymentOrderId: 'ORD-4098',
+      paymentStatus: 'refunded',
+      refundStatus: 'refunded',
+      refundAmountInr: 208,
+      invoiceNumber: 'INV-PKP-2026-4098',
+      auditTrail: [
+        '11:20Z Confirmed & Paid (₹208 INR)',
+        '12:00Z Cancelled Before Slot Window -> 100% Refund Initiated',
+        '12:01Z Gateway Refund Settled (₹208 INR)',
+      ],
+    },
+    {
+      id: 'BK-2026-4097',
+      spaceId: 'BAY-B2',
+      facilityId: 'FAC-02',
+      facilityName: 'Sahakarnagar Business Hub Basement',
+      spaceCode: 'S-Hub B2 (EV Compact)',
+      driverName: 'Priya Nair',
+      driverEmail: 'priya.nair@bengaluru.in',
+      vehicleId: 'VEH-HATCH-03',
+      vehicleLabel: 'Tata Tiago EV (Hatchback)',
+      vehiclePlate: 'KA-01-XY-2045',
+      startMin: 16 * 60,
+      endMin: 18 * 60,
+      bufferMinutes: 15,
+      status: 'cancelled',
+      baseAmountInr: 70,
+      platformFeeInr: 10,
+      gstInr: 14,
+      totalAmountInr: 94,
+      accessCode: 'PKP-842-B2',
+      entranceLabel: 'West Basement Ramp Gate 2',
+      createdAt: '2026-11-17T09:15:00Z',
+      lateArrivalPolicy: {
+        graceMinutes: 15,
+        forfeitAfterMinutes: 40,
+        summary: 'Cancelled prior to checkout; bay released back to pool.',
+      },
+      extensionRequests: [],
+      paymentStatus: 'unpaid',
+      refundStatus: 'none',
+      auditTrail: [
+        '09:15Z Transactional Hold Created',
+        '09:18Z Hold Cancelled by Driver -> Inventory Released',
+      ],
+    },
   ];
 
   public paymentOrders: PaymentOrder[] = [
@@ -2016,6 +2070,47 @@ class ParkPoolStore {
   public disputes: DisputeRecord[] = [];
   public userReports: UserReportRecord[] = [];
   public notifications: DriverNotification[] = [];
+  public wallets: PrepaidWallet[] = [
+    {
+      driverEmail: 'aarav.sharma@bengaluru.in',
+      driverName: 'Aarav Sharma',
+      balanceInr: 500,
+      unpaidDueInr: 0,
+      bookingRestricted: false,
+      lowBalanceNotified: false,
+      updatedAt: '2026-11-20T03:00:00Z',
+      ledger: [
+        {
+          id: 'WLT-SEED-01',
+          timestamp: '2026-11-20T03:00:00Z',
+          type: 'top_up',
+          description: 'Initial Prepaid Parking Balance',
+          amountInr: 500,
+          balanceAfterInr: 500,
+        },
+      ],
+    },
+    {
+      driverEmail: 'priya.nair@bengaluru.in',
+      driverName: 'Priya Nair',
+      balanceInr: 500,
+      unpaidDueInr: 0,
+      bookingRestricted: false,
+      lowBalanceNotified: false,
+      updatedAt: '2026-11-20T02:30:00Z',
+      ledger: [
+        {
+          id: 'WLT-SEED-02',
+          timestamp: '2026-11-20T02:30:00Z',
+          type: 'top_up',
+          description: 'Initial Prepaid Parking Balance',
+          amountInr: 500,
+          balanceAfterInr: 500,
+        },
+      ],
+    },
+  ];
+  public lifecycleEvents: AutonomousLifecycleEvent[] = [];
 
   public auditLogs: Array<{
     id: string;
@@ -2046,8 +2141,46 @@ class ParkPoolStore {
       this.ensureLocationSupply(loc);
     }
     this.ensureQrTokens();
+    this.syncOccupancyStates();
     this.processedWebhookEventIds.add('EVT-SEED-4101');
     this.processedWebhookEventIds.add('EVT-SEED-4102');
+  }
+
+  public syncOccupancyStates() {
+    for (const space of this.spaces) {
+      if (space.occupancyState) continue;
+      const occupiedBk = this.bookings.find(
+        (b) =>
+          b.spaceId === space.id &&
+          (b.status === 'checked-in' || b.status === 'occupied')
+      );
+      if (occupiedBk) {
+        space.occupancyState =
+          occupiedBk.overstayStatus === 'flagged_overstay' ? 'OVERSTAY' : 'OCCUPIED';
+        space.activeOccupancyBookingId = occupiedBk.id;
+        space.vacancyConfirmed = false;
+        space.bufferCompleted = false;
+        space.lastOccupancyEvent = `Vehicle active in bay (${occupiedBk.id})`;
+        continue;
+      }
+      const upcomingBk = this.bookings.find(
+        (b) =>
+          b.spaceId === space.id &&
+          (b.status === 'confirmed' || b.status === 'held')
+      );
+      if (upcomingBk) {
+        space.occupancyState = 'BOOKED';
+        space.activeOccupancyBookingId = upcomingBk.id;
+        space.vacancyConfirmed = true;
+        space.bufferCompleted = true;
+        space.lastOccupancyEvent = `Reserved by ${upcomingBk.id}`;
+        continue;
+      }
+      space.occupancyState = 'AVAILABLE';
+      space.vacancyConfirmed = true;
+      space.bufferCompleted = true;
+      space.lastOccupancyEvent = 'Confirmed vacant and open for booking';
+    }
   }
 
   private ensureQrTokens() {
@@ -2178,6 +2311,7 @@ class ParkPoolStore {
   public getSnapshot(): WorkspaceSnapshot {
     this.expireStaleHolds();
     this.ensureQrTokens();
+    this.syncOccupancyStates();
     return {
       pilotZone: this.pilotZone,
       destinationName: this.destinationName,
@@ -2199,6 +2333,8 @@ class ParkPoolStore {
       disputes: this.disputes,
       userReports: this.userReports,
       notifications: this.notifications,
+      wallets: this.wallets,
+      lifecycleEvents: this.lifecycleEvents,
       analytics: this.computeAdminAnalytics(),
       auditLogs: this.auditLogs,
     };
@@ -2886,7 +3022,7 @@ class ParkPoolStore {
       this.spaces.push(bay4W, bay2W);
       addedFacilities++;
     }
-
+    this.syncOccupancyStates();
     return { addedFacilities };
   }
 
@@ -3036,7 +3172,33 @@ class ParkPoolStore {
       rejectionReasons.push(conflicts[0]);
     }
 
-    const eligible = authPassed && vehicleOk && opsOk && noOverlap;
+    // Critical Autonomous Rule: Never assume a space is free on timer alone; block OVERSTAY / DEPARTURE_PENDING / CLEARANCE
+    const occState = space.occupancyState || 'AVAILABLE';
+    const occupancyClear =
+      occState !== 'OVERSTAY' && occState !== 'DEPARTURE_PENDING' && occState !== 'CLEARANCE';
+    checks.push({
+      constraint: 'confirmed_physical_vacancy_buffer',
+      passed: occupancyClear,
+      detail: occupancyClear
+        ? `Physical bay status ${occState} confirmed clear for scheduled pooling`
+        : occState === 'OVERSTAY'
+        ? 'Blocked: previous vehicle is in OVERSTAY beyond booked end time (never auto-released on timer).'
+        : occState === 'DEPARTURE_PENDING'
+        ? 'Blocked: departure indicated by phone; awaiting checkout & physical vacancy confirmation.'
+        : 'Blocked: 15-minute clearance buffer running before bay reopens.',
+      evidenceRef: `occupancy:${space.id}:${occState}`,
+    });
+    if (!occupancyClear) {
+      rejectionReasons.push(
+        occState === 'OVERSTAY'
+          ? 'Bay held in OVERSTAY until previous vehicle departs'
+          : occState === 'DEPARTURE_PENDING'
+          ? 'Awaiting physical departure confirmation'
+          : 'Turnaround clearance buffer active'
+      );
+    }
+
+    const eligible = authPassed && vehicleOk && opsOk && noOverlap && occupancyClear;
     const quote = this.calculateServerQuote(space.hourlyPriceInr, reqStartMin, reqEndMin);
     const avgRating =
       space.reviews.length > 0
@@ -3167,6 +3329,16 @@ class ParkPoolStore {
       const vehicle = this.vehicles.find((v) => v.id === params.vehicleId);
       if (!vehicle) return { ok: false, error: 'VEHICLE_NOT_FOUND' };
 
+      if (params.driverEmail) {
+        const wallet = this.getOrCreateWallet(params.driverEmail, params.driverName || 'Driver');
+        if (wallet.bookingRestricted || wallet.unpaidDueInr > 0) {
+          return {
+            ok: false,
+            error: `Account restricted: ₹${wallet.unpaidDueInr} unpaid overstay/extension balance due. Please settle & top up your Prepaid Parking Wallet first.`,
+          };
+        }
+      }
+
       const evaluation = this.evaluateSpace(
         space,
         facility,
@@ -3227,6 +3399,7 @@ class ParkPoolStore {
         holdExpiresAt,
         lateArrivalPolicy: { ...facility.lateArrivalPolicy },
         extensionRequests: [],
+        extensionOffers: [],
         paymentStatus: 'unpaid',
         refundStatus: 'none',
         qrPassToken: signBookingQrToken(id, facility.id, accessCode),
@@ -3238,6 +3411,11 @@ class ParkPoolStore {
       };
 
       this.bookings.unshift(record);
+      if (!space.occupancyState || space.occupancyState === 'AVAILABLE') {
+        space.occupancyState = 'BOOKED';
+        space.activeOccupancyBookingId = record.id;
+        space.lastOccupancyEvent = `Held for ${record.id}`;
+      }
       this.addAudit(
         'Transactional Booking Service',
         'BOOKING_HOLD_CREATED',
@@ -3756,6 +3934,14 @@ class ParkPoolStore {
       bk.status = 'checked-in';
       bk.checkedInAt = nowIso;
       bk.arrivalStatus = arrivalStatus;
+      const space = this.spaces.find((s) => s.id === bk.spaceId);
+      if (space) {
+        space.occupancyState = 'OCCUPIED';
+        space.activeOccupancyBookingId = bk.id;
+        space.vacancyConfirmed = false;
+        space.bufferCompleted = false;
+        space.lastOccupancyEvent = `Driver checked in (${bk.id}) — monitoring end time`;
+      }
       bk.auditTrail.push(
         `${ts} Entrance QR/Code (${bk.accessCode}) Verified -> Checked-In (${arrivalStatus}${lateMins > 0 ? `, +${lateMins}m` : ''})`
       );
@@ -3764,21 +3950,13 @@ class ParkPoolStore {
     }
 
     if (action === 'checkout') {
-      if (bk.status !== 'occupied' && bk.status !== 'checked-in' && bk.status !== 'confirmed') {
-        return { ok: false, error: `Cannot check out from status ${bk.status}` };
-      }
-      bk.status = 'completed';
-      bk.checkedOutAt = nowIso;
-      if (bk.overstayStatus === 'flagged_overstay') {
-        bk.overstayStatus = 'resolved';
-      }
-      bk.auditTrail.push(`${ts} Check-Out Recorded -> Session Completed & Invoice Finalized`);
-      const stl = this.settlements.find((s) => s.bookingId === bk.id);
-      if (stl && stl.status === 'pending_checkout') {
-        stl.status = 'scheduled';
-      }
-      this.addAudit('Session Manager', 'CHECKOUT_COMPLETED', `${bk.id} closed cleanly; settlement scheduled.`);
-      return { ok: true, booking: bk };
+      const depRes = this.confirmDepartureAndStartClearance({
+        bookingId,
+        confirmedBy: 'driver',
+        actorName: bk.driverName,
+      });
+      if (!depRes.ok) return { ok: false, error: depRes.error };
+      return { ok: true, booking: depRes.booking };
     }
 
     if (action === 'cancel') {
@@ -3821,6 +3999,26 @@ class ParkPoolStore {
       } else {
         bk.auditTrail.push(`${ts} Unpaid Hold Cancelled -> Inventory & Buffer Released`);
       }
+      const space = this.spaces.find((s) => s.id === bk.spaceId);
+      if (
+        space &&
+        space.occupancyState !== 'OCCUPIED' &&
+        space.occupancyState !== 'OVERSTAY' &&
+        space.occupancyState !== 'DEPARTURE_PENDING' &&
+        space.occupancyState !== 'CLEARANCE'
+      ) {
+        const anotherUpcoming = this.bookings.find(
+          (other) =>
+            other.id !== bk.id &&
+            other.spaceId === space.id &&
+            (other.status === 'confirmed' || other.status === 'held')
+        );
+        space.occupancyState = anotherUpcoming ? 'BOOKED' : 'AVAILABLE';
+        space.activeOccupancyBookingId = anotherUpcoming?.id;
+        space.lastOccupancyEvent = anotherUpcoming
+          ? `Reservation ${bk.id} cancelled; holding for ${anotherUpcoming.id}`
+          : `Hold ${bk.id} cancelled — bay reopened`;
+      }
       this.addAudit('Booking Service', 'BOOKING_CANCELLED', `${bk.id} released ${bk.spaceCode}`);
       return { ok: true, booking: bk };
     }
@@ -3858,8 +4056,37 @@ class ParkPoolStore {
       return { ok: false, error: 'Please scan or provide a valid ParkPool QR token.' };
     }
 
-    const gateCheck = verifyFacilityGateQrToken(token);
-    const riderCheck = verifyBookingQrToken(token);
+    let parsedJsonPass: {
+      bookingId?: string;
+      arrivalTimestamp?: string;
+      facilityId?: string;
+      accessCode?: string;
+      signatureToken?: string;
+    } | null = null;
+    if (token.startsWith('{')) {
+      try {
+        parsedJsonPass = JSON.parse(token) as {
+          bookingId?: string;
+          arrivalTimestamp?: string;
+          facilityId?: string;
+          accessCode?: string;
+          signatureToken?: string;
+        };
+      } catch {
+        parsedJsonPass = null;
+      }
+    }
+
+    const tokenToVerify = parsedJsonPass?.signatureToken || token;
+    const gateCheck = verifyFacilityGateQrToken(tokenToVerify);
+    const riderCheck = verifyBookingQrToken(tokenToVerify);
+
+    if (parsedJsonPass && parsedJsonPass.bookingId && parsedJsonPass.bookingId !== bk.id) {
+      return {
+        ok: false,
+        error: `QR pass belongs to booking ${parsedJsonPass.bookingId}, not ${bk.id}.`,
+      };
+    }
 
     if (gateCheck.valid) {
       if (gateCheck.facilityId !== bk.facilityId) {
@@ -3875,6 +4102,13 @@ class ParkPoolStore {
           error: `QR pass belongs to booking ${riderCheck.bookingId}, not ${bk.id}.`,
         };
       }
+    } else if (
+      parsedJsonPass &&
+      parsedJsonPass.bookingId === bk.id &&
+      parsedJsonPass.arrivalTimestamp &&
+      parsedJsonPass.accessCode?.toUpperCase() === bk.accessCode.toUpperCase()
+    ) {
+      // Verified JSON entrance pass containing matching bookingId, arrivalTimestamp, and access PIN
     } else if (token.toUpperCase() !== bk.accessCode.toUpperCase()) {
       return {
         ok: false,
@@ -3911,13 +4145,21 @@ class ParkPoolStore {
     bk.qrVerifiedAt = nowIso;
     bk.qrScanMethod = input.scanMethod;
     bk.arrivalStatus = arrivalStatus;
+    const space = this.spaces.find((s) => s.id === bk.spaceId);
+    if (space) {
+      space.occupancyState = 'OCCUPIED';
+      space.activeOccupancyBookingId = bk.id;
+      space.vacancyConfirmed = false;
+      space.bufferCompleted = false;
+      space.lastOccupancyEvent = `Host scanner verified entry QR (${bk.id})`;
+    }
     bk.auditTrail.push(
-      `${ts} QR Arrival Verified (${input.scanMethod}) at ${bk.entranceLabel} -> Status: checked-in`
+      `${ts} Host Scanner QR Verified (${input.scanMethod}) at ${bk.entranceLabel} -> Status: checked-in · Bay: OCCUPIED`
     );
     this.addAudit(
       input.actorName,
       'QR_CHECKIN_VERIFIED',
-      `${bk.id} (${bk.spaceCode}) verified via ${input.scanMethod} -> status=checked-in.`
+      `${bk.id} (${bk.spaceCode}) verified via ${input.scanMethod} -> status=checked-in, occupancy=OCCUPIED.`
     );
     return { ok: true, booking: bk };
   }
@@ -3959,6 +4201,11 @@ class ParkPoolStore {
     bk.overstayStatus = 'flagged_overstay';
     bk.overstayMinutes = overstayMins;
     bk.overstayPenaltyInr = totalPenaltyInr;
+    space.occupancyState = 'OVERSTAY';
+    space.activeOccupancyBookingId = bk.id;
+    space.vacancyConfirmed = false;
+    space.bufferCompleted = false;
+    space.lastOccupancyEvent = `Overstay detected (+${overstayMins}m past ${formatMinutesToTime(bk.endMin)}) on ${bk.id}`;
     bk.auditTrail.push(
       `${ts} Overstay Flagged (+${overstayMins}m past ${formatMinutesToTime(bk.endMin)}) · Surcharge ₹${totalPenaltyInr} billed to overstaying rider`
     );
@@ -4318,6 +4565,13 @@ class ParkPoolStore {
       `${nowIso.slice(11, 19)}Z Signed Webhook ${eventId} Verified -> Confirmed & Invoice ${bk.invoiceNumber} Issued`
     );
 
+    const bay = this.spaces.find((s) => s.id === bk.spaceId);
+    if (bay && (!bay.occupancyState || bay.occupancyState === 'AVAILABLE')) {
+      bay.occupancyState = 'BOOKED';
+      bay.activeOccupancyBookingId = bk.id;
+      bay.lastOccupancyEvent = `Confirmed booking ${bk.id} awaiting gate QR arrival`;
+    }
+
     const fac = this.facilities.find((f) => f.id === bk.facilityId);
     const prv = fac ? this.providers.find((p) => p.id === fac.providerId) : undefined;
     const commission = Math.round(bk.baseAmountInr * 0.1);
@@ -4352,6 +4606,814 @@ class ParkPoolStore {
       `${eventId} settled ${order.id} (₹${order.amountInr}) -> ${bk.id} confirmed & reconciled.`
     );
     return { ok: true, duplicate: false, webhookEvent: evRecord, booking: bk };
+  }
+
+  // =========================================================================
+  // PREPAID PARKING WALLET, HOST SCANNER ENTRY & AUTONOMOUS LIFECYCLE
+  // =========================================================================
+
+  public getOrCreateWallet(email: string, name: string): PrepaidWallet {
+    const cleanEmail = (email || 'driver@bengaluru.in').trim().toLowerCase();
+    const existing = this.wallets.find((w) => w.driverEmail.toLowerCase() === cleanEmail);
+    if (existing) {
+      if (name && name.trim()) existing.driverName = name.trim();
+      return existing;
+    }
+    const nowIso = new Date().toISOString();
+    const created: PrepaidWallet = {
+      driverEmail: cleanEmail,
+      driverName: name?.trim() || 'Driver',
+      balanceInr: 500,
+      unpaidDueInr: 0,
+      bookingRestricted: false,
+      lowBalanceNotified: false,
+      updatedAt: nowIso,
+      ledger: [
+        {
+          id: `WLT-INIT-${Date.now().toString(36).toUpperCase().slice(-4)}`,
+          timestamp: nowIso,
+          type: 'top_up',
+          description: 'Initial Prepaid Parking Balance',
+          amountInr: 500,
+          balanceAfterInr: 500,
+        },
+      ],
+    };
+    this.wallets.unshift(created);
+    return created;
+  }
+
+  public topUpWallet(
+    email: string,
+    name: string,
+    amountInr: number
+  ): { ok: boolean; wallet?: PrepaidWallet; error?: string } {
+    const cleanAmt = Math.round(Number(amountInr));
+    if (!Number.isFinite(cleanAmt) || cleanAmt < 50 || cleanAmt > 10000) {
+      return { ok: false, error: 'Top-up amount must be between ₹50 and ₹10,000.' };
+    }
+    const wallet = this.getOrCreateWallet(email, name);
+    const nowIso = new Date().toISOString();
+
+    let remaining = cleanAmt;
+    if (wallet.unpaidDueInr > 0) {
+      const settledDue = Math.min(remaining, wallet.unpaidDueInr);
+      wallet.unpaidDueInr -= settledDue;
+      remaining -= settledDue;
+      wallet.ledger.unshift({
+        id: `WLT-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        timestamp: nowIso,
+        type: 'unpaid_due',
+        description: `Cleared unpaid overstay/extension due (₹${settledDue})`,
+        amountInr: -settledDue,
+        balanceAfterInr: wallet.balanceInr,
+      });
+    }
+
+    wallet.balanceInr += remaining;
+    wallet.bookingRestricted = wallet.unpaidDueInr > 0;
+    wallet.lowBalanceNotified = wallet.balanceInr < 50;
+    wallet.updatedAt = nowIso;
+
+    wallet.ledger.unshift({
+      id: `WLT-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      timestamp: nowIso,
+      type: 'top_up',
+      description: `Prepaid Wallet Top-Up (+₹${cleanAmt})`,
+      amountInr: cleanAmt,
+      balanceAfterInr: wallet.balanceInr,
+    });
+
+    this.addAudit(
+      wallet.driverName,
+      'PREPAID_WALLET_TOPUP',
+      `Added ₹${cleanAmt} to ${wallet.driverEmail}. Available balance: ₹${wallet.balanceInr}, unpaid due: ₹${wallet.unpaidDueInr}.`
+    );
+    return { ok: true, wallet };
+  }
+
+  public settleChargeFromWallet(params: {
+    email: string;
+    name: string;
+    amountInr: number;
+    description: string;
+    type: WalletLedgerItem['type'];
+    bookingId?: string;
+    allowShortfall?: boolean;
+  }): {
+    ok: boolean;
+    wallet: PrepaidWallet;
+    paidFromWalletInr: number;
+    shortfallInr: number;
+    error?: string;
+  } {
+    const wallet = this.getOrCreateWallet(params.email, params.name);
+    const charge = Math.max(0, Math.round(params.amountInr));
+    const nowIso = new Date().toISOString();
+
+    if (charge === 0) {
+      return { ok: true, wallet, paidFromWalletInr: 0, shortfallInr: 0 };
+    }
+
+    if (wallet.balanceInr < charge && !params.allowShortfall) {
+      if (!wallet.lowBalanceNotified) {
+        wallet.lowBalanceNotified = true;
+        this.notifications.unshift({
+          id: `NTF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+          driverEmail: wallet.driverEmail,
+          driverName: wallet.driverName,
+          bookingId: params.bookingId || 'WALLET',
+          type: 'low_balance',
+          title: `Low Prepaid Balance (₹${wallet.balanceInr} available)`,
+          message: `Need ₹${charge} for ${params.description}. Top up your Prepaid Parking Balance to continue without interruption.`,
+          read: false,
+          createdAt: nowIso,
+        });
+      }
+      return {
+        ok: false,
+        wallet,
+        paidFromWalletInr: 0,
+        shortfallInr: charge - wallet.balanceInr,
+        error: `Insufficient Prepaid Balance (₹${wallet.balanceInr} available, ₹${charge} needed). Please top up ₹${charge - wallet.balanceInr} first.`,
+      };
+    }
+
+    const paidFromWallet = Math.min(wallet.balanceInr, charge);
+    const shortfall = charge - paidFromWallet;
+    wallet.balanceInr -= paidFromWallet;
+    wallet.updatedAt = nowIso;
+
+    if (paidFromWallet > 0) {
+      wallet.ledger.unshift({
+        id: `WLT-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        timestamp: nowIso,
+        type: params.type,
+        description: params.description,
+        amountInr: -paidFromWallet,
+        balanceAfterInr: wallet.balanceInr,
+        bookingId: params.bookingId,
+      });
+    }
+
+    if (shortfall > 0) {
+      wallet.unpaidDueInr += shortfall;
+      wallet.bookingRestricted = true;
+      wallet.ledger.unshift({
+        id: `WLT-DUE-${Date.now().toString(36).toUpperCase().slice(-4)}`,
+        timestamp: nowIso,
+        type: 'unpaid_due',
+        description: `Unpaid balance due: ${params.description} (Shortfall ₹${shortfall})`,
+        amountInr: -shortfall,
+        balanceAfterInr: 0,
+        bookingId: params.bookingId,
+      });
+      this.notifications.unshift({
+        id: `NTF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        driverEmail: wallet.driverEmail,
+        driverName: wallet.driverName,
+        bookingId: params.bookingId || 'WALLET',
+        type: 'low_balance',
+        title: `Unpaid Parking Balance ₹${wallet.unpaidDueInr} — Future Bookings Restricted`,
+        message: `Your prepaid wallet lacked ₹${shortfall} during automatic overstay settlement. Please top up your wallet to clear dues and unlock new bookings.`,
+        read: false,
+        createdAt: nowIso,
+      });
+    } else if (wallet.balanceInr < 60 && !wallet.lowBalanceNotified) {
+      wallet.lowBalanceNotified = true;
+      this.notifications.unshift({
+        id: `NTF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        driverEmail: wallet.driverEmail,
+        driverName: wallet.driverName,
+        bookingId: params.bookingId || 'WALLET',
+        type: 'low_balance',
+        title: `Low Prepaid Parking Balance (₹${wallet.balanceInr} left)`,
+        message: `Your prepaid balance dropped to ₹${wallet.balanceInr}. Top up soon so automatic extensions or overstay settlements stay seamless.`,
+        read: false,
+        createdAt: nowIso,
+      });
+    }
+
+    return { ok: true, wallet, paidFromWalletInr: paidFromWallet, shortfallInr: shortfall };
+  }
+
+  public payHoldWithWallet(
+    bookingId: string,
+    email: string,
+    name: string
+  ): { ok: boolean; booking?: BookingRecord; wallet?: PrepaidWallet; error?: string } {
+    this.expireStaleHolds();
+    const bk = this.bookings.find((b) => b.id === bookingId);
+    if (!bk) return { ok: false, error: 'Booking not found' };
+    if (bk.status !== 'held') {
+      return { ok: false, error: `Only held bookings can be paid from wallet (status: ${bk.status}).` };
+    }
+    const orderRes = this.createPaymentOrder(bk.id);
+    if (!orderRes.ok || !orderRes.order) {
+      return { ok: false, error: orderRes.error || 'Could not compute server quote' };
+    }
+    const debit = this.settleChargeFromWallet({
+      email: bk.driverEmail || email,
+      name: bk.driverName || name,
+      amountInr: orderRes.order.amountInr,
+      description: `Initial booking ${bk.id} (${bk.spaceCode})`,
+      type: 'booking_charge',
+      bookingId: bk.id,
+      allowShortfall: false,
+    });
+    if (!debit.ok) {
+      return { ok: false, wallet: debit.wallet, error: debit.error };
+    }
+
+    const nowIso = new Date().toISOString();
+    orderRes.order.status = 'paid';
+    orderRes.order.paidAt = nowIso;
+    orderRes.order.reconciliationStatus = 'matched';
+    bk.status = 'confirmed';
+    bk.paymentStatus = 'paid';
+    bk.walletSettledInr = (bk.walletSettledInr || 0) + orderRes.order.amountInr;
+    bk.invoiceNumber = bk.invoiceNumber || `INV-PKP-${bk.id.slice(-4)}`;
+    bk.auditTrail.push(
+      `${nowIso.slice(11, 19)}Z Paid ₹${orderRes.order.amountInr} via Prepaid Parking Balance -> Confirmed & Entry QR Pass Issued`
+    );
+
+    const bay = this.spaces.find((s) => s.id === bk.spaceId);
+    if (bay && (!bay.occupancyState || bay.occupancyState === 'AVAILABLE')) {
+      bay.occupancyState = 'BOOKED';
+      bay.activeOccupancyBookingId = bk.id;
+      bay.lastOccupancyEvent = `Confirmed & paid via Prepaid Wallet (${bk.id})`;
+    }
+
+    const fac = this.facilities.find((f) => f.id === bk.facilityId);
+    const prv = fac ? this.providers.find((p) => p.id === fac.providerId) : undefined;
+    const commission = Math.round(bk.baseAmountInr * 0.1);
+    this.settlements.unshift({
+      id: `STL-${bk.id.slice(-4)}-${Date.now().toString(36).slice(-2).toUpperCase()}`,
+      providerId: prv?.id || 'PRV-01',
+      providerName: prv?.name || fac?.providerName || 'Partner Provider',
+      bookingId: bk.id,
+      facilityName: bk.facilityName,
+      grossInr: bk.baseAmountInr,
+      platformCommissionInr: commission,
+      gstWithheldInr: bk.gstInr,
+      netPayoutInr: bk.baseAmountInr - commission,
+      status: 'pending_checkout',
+    });
+
+    this.transactions.unshift({
+      id: `TXN-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      timestamp: nowIso,
+      bookingId: bk.id,
+      type: 'charge',
+      amountInr: orderRes.order.amountInr,
+      actor: bk.driverName,
+      status: 'wallet_settled',
+      referenceId: orderRes.order.id,
+    });
+
+    this.addAudit(
+      bk.driverName,
+      'PREPAID_WALLET_BOOKING_PAID',
+      `${bk.id} confirmed for ₹${orderRes.order.amountInr} from prepaid wallet (remaining ₹${debit.wallet.balanceInr}).`
+    );
+    return { ok: true, booking: bk, wallet: debit.wallet };
+  }
+
+  public verifyDriverQrAtHostScanner(input: {
+    scannedInput: string;
+    expectedFacilityId?: string;
+    actorName: string;
+    arrivalMinutesLate?: number;
+  }): {
+    ok: boolean;
+    booking?: BookingRecord;
+    lifecycleEvent?: AutonomousLifecycleEvent;
+    error?: string;
+  } {
+    const raw = input.scannedInput.trim();
+    if (!raw) {
+      return { ok: false, error: 'Scan or enter a driver Entry QR payload, Gate PIN, or Booking ID.' };
+    }
+
+    let targetBooking: BookingRecord | undefined;
+    let tokenForVerify = raw;
+
+    if (raw.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw) as {
+          bookingId?: string;
+          signatureToken?: string;
+          accessCode?: string;
+        };
+        if (parsed.bookingId) {
+          targetBooking = this.bookings.find((b) => b.id === parsed.bookingId);
+        }
+        tokenForVerify = parsed.signatureToken || raw;
+      } catch {
+        // Not JSON; fall through
+      }
+    }
+
+    if (!targetBooking) {
+      const qrInfo = verifyBookingQrToken(raw);
+      if (qrInfo.valid && qrInfo.bookingId) {
+        targetBooking = this.bookings.find((b) => b.id === qrInfo.bookingId);
+      }
+    }
+
+    if (!targetBooking) {
+      targetBooking = this.bookings.find(
+        (b) =>
+          b.id.toUpperCase() === raw.toUpperCase() ||
+          b.accessCode.toUpperCase() === raw.toUpperCase()
+      );
+      if (targetBooking) {
+        tokenForVerify = targetBooking.qrPassToken || targetBooking.accessCode;
+      }
+    }
+
+    if (!targetBooking) {
+      return {
+        ok: false,
+        error: 'No matching confirmed booking found for this QR code or Gate PIN.',
+      };
+    }
+
+    if (input.expectedFacilityId && targetBooking.facilityId !== input.expectedFacilityId) {
+      return {
+        ok: false,
+        error: `QR pass is for ${targetBooking.facilityName}, not this host scanner facility.`,
+      };
+    }
+
+    const res = this.verifyQrCheckin({
+      bookingId: targetBooking.id,
+      scannedToken: tokenForVerify,
+      scanMethod: 'camera',
+      arrivalMinutesLate: input.arrivalMinutesLate,
+      actorName: `Host Scanner (${input.actorName})`,
+    });
+    if (!res.ok || !res.booking) {
+      return { ok: false, error: res.error };
+    }
+
+    const bk = res.booking;
+    const fac = this.facilities.find((f) => f.id === bk.facilityId);
+    const ev: AutonomousLifecycleEvent = {
+      id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: bk.id,
+      spaceId: bk.spaceId,
+      spaceCode: bk.spaceCode,
+      facilityName: bk.facilityName,
+      trigger: 'entry_scan',
+      createdAt: new Date().toISOString(),
+      outcomeSummary: `Host scanner verified ${bk.vehiclePlate || bk.vehicleLabel} (${bk.id}). Status -> CHECKED_IN, Bay -> OCCUPIED.`,
+      resultingOccupancyState: 'OCCUPIED',
+      executionMode: 'deterministic_service',
+      steps: [
+        {
+          stepNumber: 1,
+          agentName: 'Host Scanner Identification',
+          action: 'Verified Driver QR & Vehicle Plate',
+          detail: `Scanned ${bk.id} (${bk.vehiclePlate || bk.vehicleLabel}) at ${fac?.entranceLabel || bk.entranceLabel}.`,
+          status: 'done',
+        },
+        {
+          stepNumber: 2,
+          agentName: 'Occupancy Monitor Agent',
+          action: 'Session Started -> OCCUPIED',
+          detail: `Tracking session until scheduled end ${formatMinutesToTime(bk.endMin)}.`,
+          status: 'done',
+        },
+      ],
+    };
+    this.lifecycleEvents.unshift(ev);
+    return { ok: true, booking: bk, lifecycleEvent: ev };
+  }
+
+  public recordSmartDepartureSignal(input: {
+    bookingId: string;
+    signalType: 'im_leaving_button' | 'geofence_exit';
+    distanceFromGateM?: number;
+    actorName: string;
+  }): {
+    ok: boolean;
+    booking?: BookingRecord;
+    lifecycleEvent?: AutonomousLifecycleEvent;
+    error?: string;
+  } {
+    const bk = this.bookings.find((b) => b.id === input.bookingId);
+    if (!bk) return { ok: false, error: 'Booking not found' };
+    if (bk.status !== 'checked-in' && bk.status !== 'occupied') {
+      return {
+        ok: false,
+        error: `Smart departure only applies to an active checked-in/occupied session (current: ${bk.status}).`,
+      };
+    }
+
+    const space = this.spaces.find((s) => s.id === bk.spaceId);
+    const nowIso = new Date().toISOString();
+    const ts = nowIso.slice(11, 19) + 'Z';
+
+    bk.departureSignal = {
+      type: input.signalType,
+      detectedAt: nowIso,
+      distanceFromGateM: input.distanceFromGateM,
+      gpsNote:
+        input.signalType === 'geofence_exit'
+          ? `Phone moved ${input.distanceFromGateM || 150}m outside facility geofence. Because GPS tracks the phone—not the vehicle itself—bay stays DEPARTURE_PENDING until checkout is confirmed.`
+          : 'Driver pressed "I\'m Leaving". Bay held as DEPARTURE_PENDING until physical exit & checkout confirmation.',
+      confirmedByDriver: false,
+      confirmedByHost: false,
+    };
+    bk.auditTrail.push(
+      `${ts} Smart Departure Signal (${input.signalType}) -> Space marked DEPARTURE_PENDING`
+    );
+
+    if (space) {
+      space.occupancyState = 'DEPARTURE_PENDING';
+      space.vacancyConfirmed = false;
+      space.lastOccupancyEvent =
+        input.signalType === 'geofence_exit'
+          ? `GPS geofence exit detected (${input.distanceFromGateM || 150}m) — awaiting confirmation`
+          : 'Driver indicated departure ("I\'m Leaving") — awaiting checkout confirmation';
+    }
+
+    const ev: AutonomousLifecycleEvent = {
+      id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: bk.id,
+      spaceId: bk.spaceId,
+      spaceCode: bk.spaceCode,
+      facilityName: bk.facilityName,
+      trigger: 'departure_signal',
+      createdAt: nowIso,
+      outcomeSummary: `Smart Departure detected (${input.signalType}). Bay moved to DEPARTURE_PENDING and kept locked from new bookings until checkout confirmed.`,
+      resultingOccupancyState: 'DEPARTURE_PENDING',
+      executionMode: 'deterministic_service',
+      steps: [
+        {
+          stepNumber: 1,
+          agentName: 'Smartphone Departure Sensor',
+          action:
+            input.signalType === 'geofence_exit'
+              ? `Geofence Exit (${input.distanceFromGateM || 150}m)`
+              : '"I\'m Leaving" Triggered',
+          detail: bk.departureSignal.gpsNote,
+          status: 'warning',
+        },
+        {
+          stepNumber: 2,
+          agentName: 'Availability Guard Agent',
+          action: 'Locked Bay as DEPARTURE_PENDING',
+          detail: 'Bay remains unavailable for new bookings until driver or host confirms physical exit.',
+          status: 'action_required',
+        },
+      ],
+    };
+    this.lifecycleEvents.unshift(ev);
+    this.addAudit(
+      input.actorName,
+      'DEPARTURE_SIGNAL_RECORDED',
+      `${bk.id} (${bk.spaceCode}) -> DEPARTURE_PENDING via ${input.signalType}.`
+    );
+    return { ok: true, booking: bk, lifecycleEvent: ev };
+  }
+
+  public confirmDepartureAndStartClearance(input: {
+    bookingId: string;
+    confirmedBy: 'driver' | 'host';
+    actorName: string;
+  }): {
+    ok: boolean;
+    booking?: BookingRecord;
+    wallet?: PrepaidWallet;
+    lifecycleEvent?: AutonomousLifecycleEvent;
+    error?: string;
+  } {
+    const bk = this.bookings.find((b) => b.id === input.bookingId);
+    if (!bk) return { ok: false, error: 'Booking not found' };
+    if (bk.status !== 'checked-in' && bk.status !== 'occupied' && bk.status !== 'confirmed') {
+      return { ok: false, error: `Cannot confirm departure from status ${bk.status}` };
+    }
+
+    const space = this.spaces.find((s) => s.id === bk.spaceId);
+    const nowIso = new Date().toISOString();
+    const ts = nowIso.slice(11, 19) + 'Z';
+
+    let walletResult: PrepaidWallet | undefined;
+    // Automatically settle any flagged overstay fee that has not yet been settled via prepaid wallet
+    if (bk.overstayStatus === 'flagged_overstay' && (bk.overstayPenaltyInr || 0) > 0) {
+      const fee = bk.overstayPenaltyInr || 0;
+      const settlement = this.settleChargeFromWallet({
+        email: bk.driverEmail || 'driver@bengaluru.in',
+        name: bk.driverName,
+        amountInr: fee,
+        description: `Verified overstay settlement on ${bk.spaceCode} (+${bk.overstayMinutes || 30}m)`,
+        type: 'overstay_settlement',
+        bookingId: bk.id,
+        allowShortfall: true,
+      });
+      walletResult = settlement.wallet;
+      bk.walletSettledInr = (bk.walletSettledInr || 0) + settlement.paidFromWalletInr;
+      bk.auditTrail.push(
+        `${ts} Prepaid Wallet Overstay Settlement: ₹${settlement.paidFromWalletInr} deducted${settlement.shortfallInr > 0 ? ` (₹${settlement.shortfallInr} unpaid due recorded — bookings restricted)` : ''}`
+      );
+    } else if (bk.driverEmail) {
+      walletResult = this.getOrCreateWallet(bk.driverEmail, bk.driverName);
+    }
+
+    bk.status = 'completed';
+    bk.checkedOutAt = nowIso;
+    bk.actualDepartureAt = nowIso;
+    if (bk.overstayStatus === 'flagged_overstay') {
+      bk.overstayStatus = 'resolved';
+    }
+    if (bk.departureSignal) {
+      if (input.confirmedBy === 'driver') bk.departureSignal.confirmedByDriver = true;
+      if (input.confirmedBy === 'host') bk.departureSignal.confirmedByHost = true;
+    } else {
+      bk.departureSignal = {
+        type: 'im_leaving_button',
+        detectedAt: nowIso,
+        gpsNote: `Confirmed directly by ${input.confirmedBy}.`,
+        confirmedByDriver: input.confirmedBy === 'driver',
+        confirmedByHost: input.confirmedBy === 'host',
+      };
+    }
+    bk.auditTrail.push(`${ts} Departure Confirmed (${input.confirmedBy}) -> Clearance Buffer Active`);
+
+    const stl = this.settlements.find((s) => s.bookingId === bk.id);
+    if (stl && stl.status === 'pending_checkout') {
+      stl.status = 'scheduled';
+    }
+
+    const bufferMins = space?.bufferMinutes || 15;
+    const clearanceEndsAt = new Date(Date.now() + bufferMins * 60 * 1000).toISOString();
+    if (space) {
+      space.occupancyState = 'CLEARANCE';
+      space.vacancyConfirmed = true;
+      space.bufferCompleted = false;
+      space.clearanceEndsAt = clearanceEndsAt;
+      space.lastOccupancyEvent = `Vacancy confirmed by ${input.confirmedBy}; ${bufferMins}m turnaround clearance buffer started`;
+    }
+
+    const ev: AutonomousLifecycleEvent = {
+      id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: bk.id,
+      spaceId: bk.spaceId,
+      spaceCode: bk.spaceCode,
+      facilityName: bk.facilityName,
+      trigger: 'departure_confirmed',
+      createdAt: nowIso,
+      outcomeSummary: `Checkout & physical departure confirmed. Space entered ${bufferMins}m CLEARANCE buffer before reopening.`,
+      resultingOccupancyState: 'CLEARANCE',
+      executionMode: 'deterministic_service',
+      steps: [
+        {
+          stepNumber: 6,
+          agentName: 'Clearance Buffer Manager Agent',
+          action: `Started ${bufferMins}-Min Turnaround Buffer`,
+          detail: `Physical vacancy confirmed by ${input.confirmedBy}. Space stays locked in CLEARANCE until ${clearanceEndsAt.slice(11, 16)}Z.`,
+          status: 'done',
+        },
+      ],
+    };
+    this.lifecycleEvents.unshift(ev);
+    this.addAudit(
+      input.actorName,
+      'DEPARTURE_CONFIRMED_CLEARANCE_STARTED',
+      `${bk.id} completed; ${bk.spaceCode} in CLEARANCE (${bufferMins}m buffer).`
+    );
+    return { ok: true, booking: bk, wallet: walletResult, lifecycleEvent: ev };
+  }
+
+  public completeClearanceBufferAndReopen(
+    spaceId: string,
+    actorName: string
+  ): {
+    ok: boolean;
+    space?: ParkingSpace;
+    lifecycleEvent?: AutonomousLifecycleEvent;
+    error?: string;
+  } {
+    const space = this.spaces.find((s) => s.id === spaceId);
+    if (!space) return { ok: false, error: 'Space not found' };
+    const state = space.occupancyState || 'AVAILABLE';
+
+    if (state === 'OCCUPIED' || state === 'OVERSTAY' || state === 'DEPARTURE_PENDING') {
+      return {
+        ok: false,
+        error: `Safety Block: Cannot reopen ${space.spaceCode} from state ${state}. Physical vacancy must be confirmed first!`,
+      };
+    }
+    if (state === 'CLEARANCE' && !space.vacancyConfirmed) {
+      return {
+        ok: false,
+        error: `Safety Block: Physical vacancy is not confirmed on ${space.spaceCode}.`,
+      };
+    }
+
+    const upcoming = this.bookings.find(
+      (b) =>
+        b.spaceId === space.id &&
+        (b.status === 'confirmed' || b.status === 'held')
+    );
+
+    const nextState: SpaceOccupancyState = upcoming ? 'BOOKED' : 'AVAILABLE';
+    const nowIso = new Date().toISOString();
+    space.occupancyState = nextState;
+    space.bufferCompleted = true;
+    space.vacancyConfirmed = true;
+    space.clearanceEndsAt = undefined;
+    space.activeOccupancyBookingId = upcoming?.id;
+    space.lastOccupancyEvent = upcoming
+      ? `Clearance buffer completed -> ready for next reservation ${upcoming.id}`
+      : 'Clearance buffer completed & physical vacancy confirmed -> AVAILABLE';
+
+    const fac = this.facilities.find((f) => f.id === space.facilityId);
+    const ev: AutonomousLifecycleEvent = {
+      id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: upcoming?.id || space.id,
+      spaceId: space.id,
+      spaceCode: space.spaceCode,
+      facilityName: fac?.name || 'Verified Facility',
+      trigger: 'buffer_completed',
+      createdAt: nowIso,
+      outcomeSummary: `Step 7 Complete: Physical vacancy confirmed and turnaround buffer finished. Availability Agent set ${space.spaceCode} -> ${nextState}.`,
+      resultingOccupancyState: nextState,
+      executionMode: 'deterministic_service',
+      steps: [
+        {
+          stepNumber: 7,
+          agentName: 'Availability Agent',
+          action: `Reopened Bay -> ${nextState}`,
+          detail: upcoming
+            ? `Buffer cleared; bay preserved for upcoming confirmed reservation ${upcoming.id}.`
+            : 'Turnaround buffer complete and physical vacancy confirmed. Bay is now discoverable and bookable.',
+          status: 'done',
+        },
+      ],
+    };
+    this.lifecycleEvents.unshift(ev);
+    this.addAudit(
+      actorName,
+      'CLEARANCE_BUFFER_COMPLETED',
+      `${space.spaceCode} transitioned from CLEARANCE -> ${nextState}.`
+    );
+    return { ok: true, space, lifecycleEvent: ev };
+  }
+
+  public respondToExtensionOffer(input: {
+    bookingId: string;
+    offerId: string;
+    decision: 'accept' | 'decline';
+    actorEmail: string;
+    actorName: string;
+  }): {
+    ok: boolean;
+    booking?: BookingRecord;
+    offer?: ExtensionOffer;
+    wallet?: PrepaidWallet;
+    error?: string;
+  } {
+    if (this.bookingLock) {
+      return { ok: false, error: 'Concurrent transaction lock active; retry momentarily.' };
+    }
+    this.bookingLock = true;
+    try {
+      const bk = this.bookings.find((b) => b.id === input.bookingId);
+      if (!bk) return { ok: false, error: 'Booking not found' };
+      const offers = bk.extensionOffers || [];
+      const offer = offers.find((o) => o.id === input.offerId);
+      if (!offer) return { ok: false, error: 'Extension offer not found' };
+      if (offer.status !== 'pending_driver_acceptance') {
+        return { ok: false, error: `Offer already ${offer.status}` };
+      }
+
+      const nowIso = new Date().toISOString();
+      const ts = nowIso.slice(11, 19) + 'Z';
+      const space = this.spaces.find((s) => s.id === bk.spaceId);
+
+      if (input.decision === 'decline') {
+        offer.status = 'declined';
+        offer.respondedAt = nowIso;
+        bk.auditTrail.push(`${ts} Driver declined extension offer ${offer.id} (+${offer.additionalMinutes}m)`);
+        this.addAudit(
+          input.actorName,
+          'EXTENSION_OFFER_DECLINED',
+          `${bk.id} declined extension offer ${offer.id}; must proceed to departure.`
+        );
+        return { ok: true, booking: bk, offer };
+      }
+
+      // Accept: re-check conflicts & hard cutoff transactionally + settle from prepaid wallet
+      if (!space) return { ok: false, error: 'Space not found' };
+      const conflictBooking = this.bookings.find(
+        (other) =>
+          other.id !== bk.id &&
+          other.spaceId === bk.spaceId &&
+          (other.status === 'held' ||
+            other.status === 'confirmed' ||
+            other.status === 'checked-in' ||
+            other.status === 'occupied') &&
+          bk.endMin < other.startMin + space.bufferMinutes &&
+          offer.requestedEndMin + space.bufferMinutes > other.startMin
+      );
+      if (conflictBooking || offer.requestedEndMin > space.hardDepartureMin) {
+        offer.status = 'expired';
+        offer.respondedAt = nowIso;
+        return {
+          ok: false,
+          error: 'Extension offer expired because a conflicting reservation or cutoff appeared.',
+        };
+      }
+
+      const debit = this.settleChargeFromWallet({
+        email: bk.driverEmail || input.actorEmail,
+        name: bk.driverName || input.actorName,
+        amountInr: offer.additionalTotalInr,
+        description: `Accepted +${offer.additionalMinutes}m extension on ${bk.spaceCode}`,
+        type: 'extension_settlement',
+        bookingId: bk.id,
+        allowShortfall: false,
+      });
+      if (!debit.ok) {
+        return { ok: false, wallet: debit.wallet, error: debit.error };
+      }
+
+      const newQuote = this.calculateServerQuote(
+        space.hourlyPriceInr,
+        bk.startMin,
+        offer.requestedEndMin
+      );
+      bk.endMin = offer.requestedEndMin;
+      bk.baseAmountInr = newQuote.baseAmountInr;
+      bk.platformFeeInr = newQuote.platformFeeInr;
+      bk.gstInr = newQuote.gstInr;
+      bk.totalAmountInr = newQuote.totalAmountInr;
+      bk.overstayStatus = 'none';
+      bk.overstayMinutes = undefined;
+      bk.overstayPenaltyInr = undefined;
+      bk.walletSettledInr = (bk.walletSettledInr || 0) + offer.additionalTotalInr;
+      offer.status = 'accepted';
+      offer.respondedAt = nowIso;
+      bk.auditTrail.push(
+        `${ts} Driver Accepted Extension Offer ${offer.id} (+${offer.additionalMinutes}m until ${formatMinutesToTime(bk.endMin)}) · Settled ₹${offer.additionalTotalInr} from Prepaid Wallet`
+      );
+
+      space.occupancyState = 'OCCUPIED';
+      space.lastOccupancyEvent = `Extended until ${formatMinutesToTime(bk.endMin)} (${bk.id})`;
+
+      this.transactions.unshift({
+        id: `TXN-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        timestamp: nowIso,
+        bookingId: bk.id,
+        type: 'extension_charge',
+        amountInr: offer.additionalTotalInr,
+        actor: bk.driverName,
+        status: 'wallet_settled',
+        referenceId: offer.id,
+      });
+
+      const stl = this.settlements.find((s) => s.bookingId === bk.id);
+      if (stl) {
+        stl.grossInr = bk.baseAmountInr;
+        stl.platformCommissionInr = Math.round(bk.baseAmountInr * 0.1);
+        stl.gstWithheldInr = bk.gstInr;
+        stl.netPayoutInr = bk.baseAmountInr - stl.platformCommissionInr;
+      }
+
+      this.lifecycleEvents.unshift({
+        id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+        bookingId: bk.id,
+        spaceId: bk.spaceId,
+        spaceCode: bk.spaceCode,
+        facilityName: bk.facilityName,
+        trigger: 'offer_response',
+        createdAt: nowIso,
+        outcomeSummary: `Driver A accepted +${offer.additionalMinutes}m extension offer (₹${offer.additionalTotalInr} settled via Prepaid Wallet). New end: ${formatMinutesToTime(bk.endMin)}.`,
+        resultingOccupancyState: 'OCCUPIED',
+        executionMode: 'deterministic_service',
+        steps: [
+          {
+            stepNumber: 4,
+            agentName: 'Driver Offer & Prepaid Settlement',
+            action: `Extended Until ${formatMinutesToTime(bk.endMin)}`,
+            detail: `Settled ₹${offer.additionalTotalInr} from prepaid wallet (balance left ₹${debit.wallet.balanceInr}).`,
+            status: 'done',
+          },
+        ],
+      });
+
+      this.addAudit(
+        input.actorName,
+        'EXTENSION_OFFER_ACCEPTED_WALLET',
+        `${bk.id} extended to ${formatMinutesToTime(bk.endMin)} for ₹${offer.additionalTotalInr} via Prepaid Wallet.`
+      );
+      return { ok: true, booking: bk, offer, wallet: debit.wallet };
+    } finally {
+      this.bookingLock = false;
+    }
   }
 
   public dispatchGatewayWebhook(
@@ -4482,6 +5544,10 @@ class ParkPoolStore {
       ownerBlocks: [],
       withdrawals: [],
       reviews: [],
+      occupancyState: 'AVAILABLE',
+      bufferCompleted: true,
+      vacancyConfirmed: true,
+      lastOccupancyEvent: 'Awaiting admin space publication approval',
     };
 
     this.facilities.push(newFac);

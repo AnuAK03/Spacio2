@@ -1,8 +1,14 @@
 import {
   AgentStageResult,
   AgentStreamEvent,
+  AutonomousLifecycleEvent,
+  AutonomousLifecycleStep,
+  BookingRecord,
   CandidateEvaluation,
+  ExtensionOffer,
   MultiAgentWorkflowRun,
+  ParkingSpace,
+  PrepaidWallet,
   SupervisorAudit,
   VehicleProfile,
 } from '../src/types/parkpool';
@@ -801,5 +807,319 @@ User Question: "${question}"`,
         ? parsed.answer.trim()
         : 'No grounded policy answer available.',
     citations,
+  };
+}
+
+export async function evaluateAutonomousOverstayLifecycle(input: {
+  bookingId: string;
+  requestedExtensionMinutes?: number;
+  simulateOverstayMinutes?: number;
+  actorName: string;
+}): Promise<{
+  ok: boolean;
+  error?: string;
+  booking?: BookingRecord;
+  space?: ParkingSpace;
+  offer?: ExtensionOffer;
+  impactedBookings?: BookingRecord[];
+  wallet?: PrepaidWallet;
+  lifecycleEvent?: AutonomousLifecycleEvent;
+}> {
+  const bk = store.bookings.find((b) => b.id === input.bookingId);
+  if (!bk) {
+    return { ok: false, error: 'Booking not found' };
+  }
+  if (bk.status !== 'checked-in' && bk.status !== 'occupied' && bk.status !== 'confirmed') {
+    return {
+      ok: false,
+      error: `Lifecycle overstay monitor requires an active booking (current: ${bk.status}).`,
+    };
+  }
+  const space = store.spaces.find((s) => s.id === bk.spaceId);
+  const fac = store.facilities.find((f) => f.id === bk.facilityId);
+  if (!space || !fac) {
+    return { ok: false, error: 'Linked space or facility not found' };
+  }
+
+  const nowIso = new Date().toISOString();
+  const ts = nowIso.slice(11, 19) + 'Z';
+  const extraMinutes = Math.max(
+    15,
+    Math.min(120, Math.round(input.requestedExtensionMinutes || input.simulateOverstayMinutes || 30))
+  );
+  const proposedEndMin = bk.endMin + extraMinutes;
+  const bufferMins = space.bufferMinutes || 15;
+
+  // Step 1 & 2: Monitor booking & mark OVERSTAY (never assume space is free because end time passed!)
+  if (bk.status === 'confirmed') {
+    bk.status = 'checked-in';
+    bk.checkedInAt = bk.checkedInAt || nowIso;
+  }
+  space.occupancyState = 'OVERSTAY';
+  space.activeOccupancyBookingId = bk.id;
+  space.vacancyConfirmed = false;
+  space.bufferCompleted = false;
+  space.lastOccupancyEvent = `End time (${formatMinutesToTime(bk.endMin)}) reached while vehicle still present — marked OVERSTAY`;
+  bk.auditTrail.push(
+    `${ts} Autonomous Occupancy Agent: Scheduled end (${formatMinutesToTime(bk.endMin)}) passed without exit confirmation -> Bay marked OVERSTAY`
+  );
+
+  // Step 3: Check extension feasibility (Driver B conflict, host hard cutoff, owner blocks)
+  const conflictingNext = store.bookings.find(
+    (other) =>
+      other.id !== bk.id &&
+      other.spaceId === bk.spaceId &&
+      (other.status === 'held' || other.status === 'confirmed') &&
+      other.startMin < proposedEndMin + bufferMins &&
+      other.endMin > bk.startMin
+  );
+
+  const ownerBlockConflict = space.ownerBlocks.find(
+    (blk) => blk.startMin < proposedEndMin + bufferMins && blk.endMin > bk.endMin
+  );
+  const cutoffViolation = proposedEndMin > space.hardDepartureMin;
+  const extensionFeasible = !conflictingNext && !ownerBlockConflict && !cutoffViolation;
+
+  const wallet = store.getOrCreateWallet(bk.driverEmail || 'driver@bengaluru.in', bk.driverName);
+
+  // Step 4: Pricing Intelligence Agent calculation (+ optional OpenRouter rationale)
+  const currentQuote = store.calculateServerQuote(space.hourlyPriceInr, bk.startMin, bk.endMin);
+  const extendedQuote = store.calculateServerQuote(space.hourlyPriceInr, bk.startMin, proposedEndMin);
+  const additionalBaseInr = Math.max(10, extendedQuote.baseAmountInr - currentQuote.baseAmountInr);
+  const additionalFeeInr = Math.max(2, extendedQuote.platformFeeInr - currentQuote.platformFeeInr);
+  const additionalGstInr = Math.max(2, extendedQuote.gstInr - currentQuote.gstInr);
+  const additionalTotalInr = additionalBaseInr + additionalFeeInr + additionalGstInr;
+
+  let executionMode: 'openrouter_llm' | 'deterministic_service' = 'deterministic_service';
+  let agentPricingNote = `Pro-rated ${extraMinutes}m extension at ₹${space.hourlyPriceInr}/hr plus platform & GST (₹${additionalTotalInr} total).`;
+  let agentProtectionNote = conflictingNext
+    ? `Confirmed reservation ${conflictingNext.id} (${conflictingNext.driverName}) cannot be silently displaced; Pooling Optimizer triggered.`
+    : ownerBlockConflict || cutoffViolation
+    ? `Host hard cutoff (${formatMinutesToTime(space.hardDepartureMin)}) or owner block prevents extension.`
+    : 'No upcoming conflict detected; safe to send driver extension offer.';
+
+  try {
+    const llmOut = await callOpenRouter({
+      systemPrompt:
+        'You are the ParkPool AI Pricing & Pooling Lifecycle Agent. Respond ONLY with a raw JSON object containing concise 1-sentence strings for pricingReason and protectionNote.',
+      userPrompt: `Evaluate overstay lifecycle for booking ${bk.id} at ${fac.name} (${space.spaceCode}).
+Scheduled End: ${formatMinutesToTime(bk.endMin)}, Requested Extra: +${extraMinutes}m (until ${formatMinutesToTime(proposedEndMin)}), Server Extension Total: ₹${additionalTotalInr}.
+Upcoming Driver B Conflict: ${conflictingNext ? `${conflictingNext.id} at ${formatMinutesToTime(conflictingNext.startMin)}` : 'None'}.
+Host Hard Cutoff: ${formatMinutesToTime(space.hardDepartureMin)} (violation=${cutoffViolation || Boolean(ownerBlockConflict)}).
+Return JSON: {"pricingReason": string, "protectionNote": string}`,
+      expectJson: true,
+    });
+    const parsed = extractJsonObject(llmOut.text);
+    if (typeof parsed.pricingReason === 'string' && parsed.pricingReason.trim()) {
+      agentPricingNote = parsed.pricingReason.trim();
+    }
+    if (typeof parsed.protectionNote === 'string' && parsed.protectionNote.trim()) {
+      agentProtectionNote = parsed.protectionNote.trim();
+    }
+    executionMode = 'openrouter_llm';
+  } catch {
+    // Graceful deterministic fallback when OPENROUTER_API_KEY is absent or times out
+  }
+
+  // Proactive low-balance alert before expiry/settlement
+  if (wallet.balanceInr < additionalTotalInr && !wallet.lowBalanceNotified) {
+    wallet.lowBalanceNotified = true;
+    store.notifications.unshift({
+      id: `NTF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      driverEmail: wallet.driverEmail,
+      driverName: wallet.driverName,
+      bookingId: bk.id,
+      type: 'low_balance',
+      title: `Prepaid Balance Alert (₹${wallet.balanceInr} available)`,
+      message: `Your session at ${space.spaceCode} has reached end time. Extension or overstay settlement needs ~₹${additionalTotalInr}. Top up your Prepaid Parking Balance to avoid booking restrictions.`,
+      read: false,
+      createdAt: nowIso,
+    });
+  }
+
+  let createdOffer: ExtensionOffer | undefined;
+  let impactedBookings: BookingRecord[] = [];
+  const steps: AutonomousLifecycleStep[] = [
+    {
+      stepNumber: 1,
+      agentName: 'Occupancy Monitor Agent',
+      action: 'Tracked End Time & Gate Presence',
+      detail: `Booking ${bk.id} scheduled end ${formatMinutesToTime(bk.endMin)}; no driver/host departure confirmation received.`,
+      status: 'done',
+    },
+    {
+      stepNumber: 2,
+      agentName: 'Overstay Detection Agent',
+      action: 'Marked Bay OVERSTAY (Timer Never Auto-Reopens)',
+      detail: `Bay ${space.spaceCode} locked as OVERSTAY. New holds and searches blocked until physical exit.`,
+      status: 'warning',
+    },
+    {
+      stepNumber: 3,
+      agentName: 'Feasibility & Cutoff Guard',
+      action: extensionFeasible
+        ? 'No Conflict — Extension Eligible'
+        : conflictingNext
+        ? `Conflict Detected (${conflictingNext.id})`
+        : 'Host Cutoff / Owner Block Reached',
+      detail: agentProtectionNote,
+      status: extensionFeasible ? 'done' : 'warning',
+    },
+  ];
+
+  let outcomeSummary = '';
+
+  if (extensionFeasible) {
+    // Step 4: Send Extension Offer (must be explicitly accepted by Driver A before charging)
+    createdOffer = {
+      id: `OFF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: bk.id,
+      additionalMinutes: extraMinutes,
+      requestedEndMin: proposedEndMin,
+      additionalBaseInr,
+      additionalFeeInr,
+      additionalGstInr,
+      additionalTotalInr,
+      status: 'pending_driver_acceptance',
+      pricingReason: agentPricingNote,
+      providerApprovalNote: `Host policy allows dynamic extension within operating cutoff (${formatMinutesToTime(space.hardDepartureMin)}).`,
+      createdAt: nowIso,
+    };
+    if (!bk.extensionOffers) bk.extensionOffers = [];
+    // Expire any stale pending offers cleanly
+    for (const prev of bk.extensionOffers) {
+      if (prev.status === 'pending_driver_acceptance') prev.status = 'expired';
+    }
+    bk.extensionOffers.unshift(createdOffer);
+
+    store.notifications.unshift({
+      id: `NTF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      driverEmail: bk.driverEmail,
+      driverName: bk.driverName,
+      bookingId: bk.id,
+      type: 'extension_offer',
+      title: `Extension Offer: +${extraMinutes}m at ${space.spaceCode} (₹${additionalTotalInr})`,
+      message: `No upcoming reservation conflicts. Accept this +${extraMinutes}m extension offer (until ${formatMinutesToTime(proposedEndMin)}) to auto-pay ₹${additionalTotalInr} from your Prepaid Balance, or confirm checkout & leave.`,
+      read: false,
+      createdAt: nowIso,
+    });
+
+    bk.auditTrail.push(
+      `${ts} Pricing Intelligence Agent sent Extension Offer ${createdOffer.id} (+${extraMinutes}m for ₹${additionalTotalInr}) — awaiting driver acceptance`
+    );
+
+    steps.push(
+      {
+        stepNumber: 4,
+        agentName: 'Pricing Intelligence Agent',
+        action: `Sent Extension Offer ₹${additionalTotalInr} (+${extraMinutes}m)`,
+        detail: `${agentPricingNote} Requires Driver A acceptance before charging Prepaid Wallet.`,
+        status: 'action_required',
+      },
+      {
+        stepNumber: 5,
+        agentName: 'Pooling Optimization Agent',
+        action: 'Next Driver Protection Standby',
+        detail: 'No downstream driver conflicted; space stays reserved for Driver A decision.',
+        status: 'done',
+      },
+      {
+        stepNumber: 6,
+        agentName: 'Clearance Buffer Agent',
+        action: 'Awaiting Departure Confirmation',
+        detail: `Will enforce ${bufferMins}m turnaround clearance once Driver A checks out or leaves.`,
+        status: 'action_required',
+      },
+      {
+        stepNumber: 7,
+        agentName: 'Availability Agent',
+        action: 'Hold Bay Unavailable Until Cleared',
+        detail: `${space.spaceCode} remains OVERSTAY until accepted extension completes or physical departure + buffer finishes.`,
+        status: 'done',
+      }
+    );
+
+    outcomeSummary = `No upcoming booking conflicted. Pricing Agent sent a +${extraMinutes}m Extension Offer (₹${additionalTotalInr}) awaiting Driver A acceptance; ${space.spaceCode} stays locked as OVERSTAY.`;
+  } else {
+    // Step 5: Protect Driver B via Pooling Optimization Agent (reallocate or zero-loss choice)
+    const ovRes = store.reportOverstay({
+      bookingId: bk.id,
+      overstayMinutes: extraMinutes,
+      actorName: `Autonomous Lifecycle Agent (${input.actorName})`,
+    });
+    impactedBookings = ovRes.impactedBookings || [];
+
+    const protectionDetail =
+      impactedBookings.length > 0
+        ? impactedBookings
+            .map((ib) => `${ib.id} (${ib.driverName}): ${ib.overstayResolution?.detail || 'Protected'}`)
+            .join(' ')
+        : cutoffViolation || ownerBlockConflict
+        ? `Extension blocked past host cutoff (${formatMinutesToTime(space.hardDepartureMin)}). Overstay alert & surcharge issued.`
+        : 'Upcoming reservation protected.';
+
+    steps.push(
+      {
+        stepNumber: 4,
+        agentName: 'Pricing Intelligence Agent',
+        action: `Computed Overstay Surcharge (₹${bk.overstayPenaltyInr || 60})`,
+        detail: `Extension refused due to downstream conflict/cutoff. Surcharge queued for automatic Prepaid Balance settlement on exit.`,
+        status: 'warning',
+      },
+      {
+        stepNumber: 5,
+        agentName: 'Pooling Optimization Agent',
+        action: 'Protected Upcoming Booking (Driver B)',
+        detail: protectionDetail,
+        status: 'done',
+      },
+      {
+        stepNumber: 6,
+        agentName: 'Clearance Buffer Agent',
+        action: 'Pending Physical Exit -> 15m Buffer',
+        detail: `Once vehicle vacates ${space.spaceCode}, driver/host confirms departure to start ${bufferMins}m buffer.`,
+        status: 'action_required',
+      },
+      {
+        stepNumber: 7,
+        agentName: 'Availability Agent',
+        action: 'Blocked Reopening Until Vacant + Buffer Complete',
+        detail: `${space.spaceCode} cannot accept new bookings until vacancy & clearance buffer both complete.`,
+        status: 'done',
+      }
+    );
+
+    outcomeSummary = `Extension blocked (${conflictingNext ? `protects ${conflictingNext.id}` : 'host cutoff'}). ${ovRes.summary || 'Overstay surcharge logged & Driver B protected.'}`;
+  }
+
+  const lifecycleEvent: AutonomousLifecycleEvent = {
+    id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+    bookingId: bk.id,
+    spaceId: space.id,
+    spaceCode: space.spaceCode,
+    facilityName: fac.name,
+    trigger: 'time_expiry_monitor',
+    createdAt: nowIso,
+    outcomeSummary,
+    resultingOccupancyState: space.occupancyState || 'OVERSTAY',
+    executionMode,
+    steps,
+  };
+
+  store.lifecycleEvents.unshift(lifecycleEvent);
+  store.addAudit(
+    'Autonomous Lifecycle Agent',
+    'LIFECYCLE_OVERSTAY_EVALUATED',
+    `${bk.id} (${space.spaceCode}): ${outcomeSummary}`
+  );
+
+  return {
+    ok: true,
+    booking: bk,
+    space,
+    offer: createdOffer,
+    impactedBookings,
+    wallet,
+    lifecycleEvent,
   };
 }

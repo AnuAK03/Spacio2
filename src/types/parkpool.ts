@@ -201,6 +201,14 @@ export interface SpaceReview {
   createdAt: string;
 }
 
+export type SpaceOccupancyState =
+  | 'AVAILABLE'
+  | 'BOOKED'
+  | 'OCCUPIED'
+  | 'OVERSTAY'
+  | 'DEPARTURE_PENDING'
+  | 'CLEARANCE';
+
 export interface ParkingSpace {
   id: string;
   facilityId: string;
@@ -221,6 +229,12 @@ export interface ParkingSpace {
   ownerBlocks: TimeBlock[];
   withdrawals: AvailabilityWithdrawal[];
   reviews: SpaceReview[];
+  occupancyState?: SpaceOccupancyState;
+  activeOccupancyBookingId?: string;
+  clearanceEndsAt?: string;
+  bufferCompleted?: boolean;
+  vacancyConfirmed?: boolean;
+  lastOccupancyEvent?: string;
 }
 
 export interface ExtensionAlternative {
@@ -245,6 +259,31 @@ export interface ExtensionRequest {
   hostDecisionBy?: string;
   hostDecisionAt?: string;
   alternatives?: ExtensionAlternative[];
+}
+
+export interface ExtensionOffer {
+  id: string;
+  bookingId: string;
+  additionalMinutes: number;
+  requestedEndMin: number;
+  additionalBaseInr: number;
+  additionalFeeInr: number;
+  additionalGstInr: number;
+  additionalTotalInr: number;
+  status: 'pending_driver_acceptance' | 'accepted' | 'declined' | 'expired';
+  pricingReason: string;
+  providerApprovalNote: string;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+export interface DepartureSignal {
+  type: 'im_leaving_button' | 'geofence_exit';
+  detectedAt: string;
+  distanceFromGateM?: number;
+  gpsNote: string;
+  confirmedByDriver: boolean;
+  confirmedByHost: boolean;
 }
 
 export interface BookingRecord {
@@ -305,6 +344,10 @@ export interface BookingRecord {
     compensationCreditInr?: number;
     options?: string[];
   };
+  extensionOffers?: ExtensionOffer[];
+  departureSignal?: DepartureSignal;
+  actualDepartureAt?: string;
+  walletSettledInr?: number;
   auditTrail: string[];
 }
 
@@ -428,7 +471,9 @@ export interface DriverNotification {
     | 'slot_withdrawn'
     | 'host_block_exception'
     | 'extension_update'
+    | 'extension_offer'
     | 'payment_update'
+    | 'low_balance'
     | 'late_arrival'
     | 'overstay_alert'
     | 'overstay_impact';
@@ -437,6 +482,61 @@ export interface DriverNotification {
   resolutionOptions?: string[];
   read: boolean;
   createdAt: string;
+}
+
+export interface WalletLedgerItem {
+  id: string;
+  timestamp: string;
+  type:
+    | 'top_up'
+    | 'booking_charge'
+    | 'extension_settlement'
+    | 'overstay_settlement'
+    | 'refund_credit'
+    | 'unpaid_due';
+  description: string;
+  amountInr: number;
+  balanceAfterInr: number;
+  bookingId?: string;
+}
+
+export interface PrepaidWallet {
+  driverEmail: string;
+  driverName: string;
+  balanceInr: number;
+  unpaidDueInr: number;
+  bookingRestricted: boolean;
+  lowBalanceNotified: boolean;
+  updatedAt: string;
+  ledger: WalletLedgerItem[];
+}
+
+export interface AutonomousLifecycleStep {
+  stepNumber: number;
+  agentName: string;
+  action: string;
+  detail: string;
+  status: 'done' | 'warning' | 'action_required';
+}
+
+export interface AutonomousLifecycleEvent {
+  id: string;
+  bookingId: string;
+  spaceId: string;
+  spaceCode: string;
+  facilityName: string;
+  trigger:
+    | 'entry_scan'
+    | 'time_expiry_monitor'
+    | 'offer_response'
+    | 'departure_signal'
+    | 'departure_confirmed'
+    | 'buffer_completed';
+  createdAt: string;
+  outcomeSummary: string;
+  resultingOccupancyState: SpaceOccupancyState;
+  executionMode: 'openrouter_llm' | 'deterministic_service';
+  steps: AutonomousLifecycleStep[];
 }
 
 export interface AdminAnalytics {
@@ -632,6 +732,8 @@ export interface WorkspaceSnapshot {
   disputes: DisputeRecord[];
   userReports: UserReportRecord[];
   notifications: DriverNotification[];
+  wallets: PrepaidWallet[];
+  lifecycleEvents: AutonomousLifecycleEvent[];
   analytics: AdminAnalytics;
   auditLogs: Array<{
     id: string;

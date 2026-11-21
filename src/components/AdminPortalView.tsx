@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Bot,
   CheckCircle2,
   CreditCard,
   Eye,
@@ -11,11 +12,13 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Wallet,
   X,
   XCircle,
 } from 'lucide-react';
 import {
   AdminAnalytics,
+  AutonomousLifecycleEvent,
   BookingRecord,
   DisputeRecord,
   Facility,
@@ -25,6 +28,7 @@ import {
   ParkingSpace,
   PaymentOrder,
   PaymentWebhookEvent,
+  PrepaidWallet,
   ProviderRecord,
   ProviderVerificationStatus,
   RefundRecord,
@@ -49,6 +53,8 @@ interface AdminPortalViewProps {
   disputes: DisputeRecord[];
   incidents: IncidentRecord[];
   userReports: UserReportRecord[];
+  wallets: PrepaidWallet[];
+  lifecycleEvents: AutonomousLifecycleEvent[];
   analytics: AdminAnalytics;
   auditLogs: Array<{
     id: string;
@@ -166,6 +172,8 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
   disputes,
   incidents,
   userReports,
+  wallets,
+  lifecycleEvents,
   analytics,
   auditLogs,
   onAdminVerifyProvider,
@@ -1011,6 +1019,145 @@ export const AdminPortalView: React.FC<AdminPortalViewProps> = ({
               </div>
               <div className="mt-0.5 text-[11px] text-[#4B5563]">
                 {analytics.expiringProviders} expiring provider(s)
+              </div>
+            </div>
+          </section>
+
+          {/* Autonomous Occupancy, Driver Protection & Wallet Restrictions */}
+          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bot className="h-4 w-4 text-[#4338CA]" />
+                <h2 className="font-display text-base font-bold text-[#111827]">
+                  Autonomous Occupancy, Driver Protection &amp; Wallet Restrictions
+                </h2>
+              </div>
+              <span className="font-mono text-[11px] text-[#4B5563] tabular-nums">
+                {spaces.filter((s) => s.occupancyState && s.occupancyState !== 'AVAILABLE').length}{' '}
+                non-available bay(s) · {wallets.filter((w) => w.bookingRestricted).length}{' '}
+                restricted wallet(s)
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+              {/* Live Bay Occupancy States */}
+              <div className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4">
+                <div className="font-display text-xs font-bold uppercase tracking-wide text-[#374151]">
+                  Live Bay Occupancy States
+                </div>
+                <div className="mt-2.5 max-h-56 space-y-2 overflow-y-auto pr-1 text-xs">
+                  {spaces.filter((s) => s.occupancyState && s.occupancyState !== 'AVAILABLE')
+                    .length === 0 ? (
+                    <div className="rounded-lg border border-black/[0.05] bg-white p-3 text-[#4B5563]">
+                      All approved bays are currently AVAILABLE with confirmed vacancy.
+                    </div>
+                  ) : (
+                    spaces
+                      .filter((s) => s.occupancyState && s.occupancyState !== 'AVAILABLE')
+                      .map((space) => {
+                        const facName =
+                          facilities.find((f) => f.id === space.facilityId)?.name ||
+                          space.facilityId;
+                        return (
+                          <div
+                            key={space.id}
+                            className="rounded-lg border border-black/[0.06] bg-white p-2.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono font-bold text-[#111827]">
+                                {space.spaceCode}
+                              </span>
+                              <span className="font-mono text-[11px] font-bold uppercase text-[#C83709]">
+                                {space.occupancyState}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] text-[#4B5563]">
+                              {facName}
+                              {space.lastOccupancyEvent ? ` · ${space.lastOccupancyEvent}` : ''}
+                            </div>
+                          </div>
+                        );
+                      })
+                  )}
+                </div>
+              </div>
+
+              {/* Driver Prepaid Wallets & Restrictions */}
+              <div className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4">
+                <div className="flex items-center gap-1.5 font-display text-xs font-bold uppercase tracking-wide text-[#374151]">
+                  <Wallet className="h-3.5 w-3.5 text-[#047857]" />
+                  <span>Prepaid Wallets &amp; Booking Holds</span>
+                </div>
+                <div className="mt-2.5 max-h-56 space-y-2 overflow-y-auto pr-1 text-xs">
+                  {wallets.length === 0 ? (
+                    <div className="rounded-lg border border-black/[0.05] bg-white p-3 text-[#4B5563]">
+                      No driver wallets provisioned yet.
+                    </div>
+                  ) : (
+                    wallets.map((w) => (
+                      <div
+                        key={w.driverEmail}
+                        className={`rounded-lg border p-2.5 ${
+                          w.bookingRestricted
+                            ? 'border-rose-300 bg-rose-50/70'
+                            : 'border-black/[0.06] bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-[#111827]">{w.driverName}</span>
+                          <span
+                            className={`font-mono text-[11px] font-bold tabular-nums ${
+                              w.bookingRestricted ? 'text-rose-700' : 'text-[#047857]'
+                            }`}
+                          >
+                            Bal ₹{w.balanceInr}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[#4B5563] tabular-nums">
+                          <span>Unpaid due: ₹{w.unpaidDueInr}</span>
+                          {w.bookingRestricted ? (
+                            <span className="font-mono font-bold uppercase text-rose-700">
+                              BOOKING RESTRICTED
+                            </span>
+                          ) : (
+                            <span className="font-mono text-[#047857]">Active</span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Recent Autonomous Lifecycle Agent Decisions */}
+              <div className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4">
+                <div className="font-display text-xs font-bold uppercase tracking-wide text-[#374151]">
+                  Autonomous Agent Lifecycle Log ({lifecycleEvents.length})
+                </div>
+                <div className="mt-2.5 max-h-56 space-y-2 overflow-y-auto pr-1 text-xs">
+                  {lifecycleEvents.length === 0 ? (
+                    <div className="rounded-lg border border-black/[0.05] bg-white p-3 text-[#4B5563]">
+                      No autonomous overstay or clearance cycles triggered yet.
+                    </div>
+                  ) : (
+                    lifecycleEvents.slice(0, 8).map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="rounded-lg border border-black/[0.06] bg-white p-2.5"
+                      >
+                        <div className="flex items-center justify-between gap-2 font-mono text-[11px]">
+                          <span className="font-bold text-[#4338CA]">
+                            {ev.spaceCode} · {ev.resultingOccupancyState}
+                          </span>
+                          <span className="text-[#6B7280]">{ev.trigger}</span>
+                        </div>
+                        <div className="mt-1 text-[11px] leading-snug text-[#374151]">
+                          {ev.outcomeSummary}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
           </section>

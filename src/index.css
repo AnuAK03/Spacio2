@@ -149,6 +149,75 @@
   animation: routeTravel 20s linear infinite;
 }
 
+/* Simplified Live Tracking CSS Path Animations */
+@keyframes vehicleDrivePath {
+  0% {
+    offset-distance: 0%;
+    opacity: 0.92;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    offset-distance: 100%;
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 1;
+  }
+}
+
+@keyframes routeDashScroll {
+  from {
+    stroke-dashoffset: 48;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes targetBeaconRing {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+}
+
+.live-track-dash {
+  animation: routeDashScroll 1.4s linear infinite;
+}
+
+.live-track-beacon {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: targetBeaconRing 2s ease-out infinite;
+}
+
+.live-track-vehicle-parked {
+  offset-path: path('M 58 164 C 145 164, 180 78, 285 78 S 415 154, 495 112 L 568 86');
+  offset-rotate: auto 0deg;
+  animation: vehicleDrivePath 5.5s cubic-bezier(0.25, 0.8, 0.25, 1) infinite;
+}
+
+.live-track-vehicle-enroute {
+  offset-path: path('M 58 158 C 165 158, 225 66, 345 96 S 475 150, 568 88');
+  offset-rotate: auto 0deg;
+  animation: vehicleDrivePath 6.5s ease-in-out infinite;
+}
+
+.live-track-paused {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

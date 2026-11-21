@@ -1,12 +1,43 @@
 import crypto from 'crypto';
-import { UserSession } from '../src/types/parkpool';
+import fs from 'fs';
+import path from 'path';
+import { getApp, getApps, initializeApp } from 'firebase-admin/app';
+import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
 
-const EPHEMERAL_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
 const EPHEMERAL_DOC_SECRET = crypto.randomBytes(32).toString('hex');
 const EPHEMERAL_WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
 
-function getSessionSecret(): string {
-  return process.env.SESSION_SECRET?.trim() || EPHEMERAL_SESSION_SECRET;
+function loadFirebaseProjectId(): string | null {
+  try {
+    const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    if (!fs.existsSync(configPath)) return null;
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { projectId?: string };
+    const projectId = raw.projectId?.trim();
+    if (!projectId || projectId === 'remixed-project-id') return null;
+    return projectId;
+  } catch {
+    return null;
+  }
+}
+
+function getFirebaseAdminAuth() {
+  const projectId = loadFirebaseProjectId();
+  if (!projectId) return null;
+  const adminApp = getApps().length ? getApp() : initializeApp({ projectId });
+  return getAuth(adminApp);
+}
+
+export async function verifyFirebaseIdToken(
+  idToken: string | undefined
+): Promise<DecodedIdToken | null> {
+  if (!idToken || idToken.length < 20) return null;
+  const adminAuth = getFirebaseAdminAuth();
+  if (!adminAuth) return null;
+  try {
+    return await adminAuth.verifyIdToken(idToken);
+  } catch {
+    return null;
+  }
 }
 
 function getDocSecret(): string {
@@ -23,36 +54,6 @@ function safeEqualHex(a: string, b: string): boolean {
     return crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
   } catch {
     return false;
-  }
-}
-
-export function signAuthToken(user: UserSession): string {
-  const payload = Buffer.from(
-    JSON.stringify({
-      user,
-      exp: Date.now() + 12 * 60 * 60 * 1000,
-    }),
-    'utf8'
-  ).toString('base64url');
-  const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
-  return `${payload}.${sig}`;
-}
-
-export function verifyAuthToken(token: string | undefined): UserSession | null {
-  if (!token || !token.includes('.')) return null;
-  const [payload, sig] = token.split('.');
-  if (!payload || !sig) return null;
-  const expected = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
-  if (!safeEqualHex(sig, expected)) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
-      user?: UserSession;
-      exp?: number;
-    };
-    if (!parsed.user || !parsed.exp || Date.now() > parsed.exp) return null;
-    return parsed.user;
-  } catch {
-    return null;
   }
 }
 

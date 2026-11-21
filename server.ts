@@ -3,13 +3,16 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { askPolicyRagAssistant, runSupervisedMultiAgentWorkflow } from './server/agents';
-import { BENGALURU_LOCATIONS, DEMO_USERS, parseTimeToMinutes, store } from './server/domain';
 import {
-  signAuthToken,
+  askPolicyRagAssistant,
+  evaluateAutonomousOverstayLifecycle,
+  runSupervisedMultiAgentWorkflow,
+} from './server/agents';
+import { BENGALURU_LOCATIONS, parseTimeToMinutes, store } from './server/domain';
+import {
   signDocumentAccessToken,
-  verifyAuthToken,
   verifyDocumentAccessToken,
+  verifyFirebaseIdToken,
 } from './server/security';
 import {
   AgentStreamEvent,
@@ -24,20 +27,86 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function extractBearerUser(req: Request): UserSession | null {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return null;
-  return verifyAuthToken(auth.slice(7).trim());
+const BOOTSTRAPPED_ADMIN_EMAIL = 'anuak2628@gmail.com';
+const verifiedSessions = new Map<string, UserSession>();
+
+function accentForRole(role: UserRole): string {
+  if (role === 'host') return '#047857';
+  if (role === 'admin') return '#4338CA';
+  return '#C83709';
 }
 
-function requireAuth(
+function resolveVerifiedRole(
+  email: string,
+  emailVerified: boolean,
+  requestedRole: unknown,
+  existingRole?: UserRole
+): UserRole | null {
+  const normalized = requestedRole === 'provider' ? 'host' : requestedRole;
+  const isBootstrappedAdmin =
+    emailVerified && email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
+
+  if (normalized === 'admin') {
+    return isBootstrappedAdmin ? 'admin' : null;
+  }
+  if (normalized === 'host' || normalized === 'driver') {
+    return normalized;
+  }
+  if (existingRole) {
+    return existingRole;
+  }
+  return isBootstrappedAdmin ? 'admin' : 'driver';
+}
+
+async function extractBearerUser(req: Request): Promise<UserSession | null> {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return null;
+  const idToken = auth.slice(7).trim();
+  const decoded = await verifyFirebaseIdToken(idToken);
+  if (!decoded || !decoded.uid || !decoded.email || !decoded.email_verified) {
+    return null;
+  }
+
+  const existing = verifiedSessions.get(decoded.uid);
+  const headerRole = req.headers['x-parkpool-role'];
+  const role = resolveVerifiedRole(
+    decoded.email,
+    Boolean(decoded.email_verified),
+    headerRole,
+    existing?.role
+  );
+  if (!role) return null;
+
+  const session: UserSession = {
+    id: decoded.uid,
+    name:
+      existing?.name ||
+      (typeof decoded.name === 'string' && decoded.name.trim()
+        ? decoded.name.trim()
+        : decoded.email.split('@')[0]),
+    email: decoded.email,
+    role,
+    organization:
+      existing?.organization ||
+      (role === 'host'
+        ? 'Bengaluru Parking Partner'
+        : role === 'admin'
+        ? 'Compliance & Operations Command'
+        : 'Bengaluru Commuter'),
+    accentHex: accentForRole(role),
+  };
+  verifiedSessions.set(decoded.uid, session);
+  return session;
+}
+
+async function requireAuth(
   req: Request,
   res: Response,
   allowedRoles?: UserRole[]
-): UserSession | null {
-  const user = extractBearerUser(req);
+): Promise<UserSession | null> {
+  const user = await extractBearerUser(req);
   if (!user) {
-    res.status(401).json({ error: 'Authentication required. Please sign in.' });
+    res.status(401).json({ error: 'Authentication required. Please sign in with Google.' });
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(user.role)) {
@@ -66,26 +135,72 @@ async function startServer() {
       aiProvider: 'openrouter',
       openRouterConfigured,
       openRouterModel: process.env.OPENROUTER_MODEL?.trim() || 'openrouter/auto',
+      authProvider: 'firebase-auth-firestore',
       timestamp: new Date().toISOString(),
     });
   });
 
-  app.post('/api/auth/login', (req, res) => {
-    const { role, name, email } = req.body ?? {};
-    const normalizedRole = role === 'provider' ? 'host' : role;
-    const validRole: UserRole =
-      normalizedRole === 'host' || normalizedRole === 'admin' || normalizedRole === 'driver'
-        ? normalizedRole
-        : 'driver';
-    const base = DEMO_USERS[validRole];
+  app.post('/api/auth/session', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.status(401).json({ error: 'Firebase ID token required in Authorization header.' });
+      return;
+    }
+    const decoded = await verifyFirebaseIdToken(authHeader.slice(7).trim());
+    if (!decoded || !decoded.uid || !decoded.email || !decoded.email_verified) {
+      res.status(401).json({ error: 'Invalid or unverified Firebase ID token.' });
+      return;
+    }
+
+    const { role, organization, displayName } = req.body ?? {};
+    const validRole = resolveVerifiedRole(
+      decoded.email,
+      Boolean(decoded.email_verified),
+      role,
+      verifiedSessions.get(decoded.uid)?.role
+    );
+    if (!validRole) {
+      res.status(403).json({
+        error: 'Forbidden: Admin access is restricted to verified administrators.',
+      });
+      return;
+    }
+
+    const cleanName =
+      typeof displayName === 'string' && displayName.trim()
+        ? displayName.trim().slice(0, 100)
+        : typeof decoded.name === 'string' && decoded.name.trim()
+        ? decoded.name.trim().slice(0, 100)
+        : decoded.email.split('@')[0];
+
+    const defaultOrg =
+      validRole === 'host'
+        ? 'Bengaluru Parking Partner'
+        : validRole === 'admin'
+        ? 'Compliance & Operations Command'
+        : 'Bengaluru Commuter';
+
+    const cleanOrg =
+      typeof organization === 'string' && organization.trim()
+        ? organization.trim().slice(0, 120)
+        : defaultOrg;
+
     const user: UserSession = {
-      ...base,
-      name: typeof name === 'string' && name.trim() ? name.trim() : base.name,
-      email: typeof email === 'string' && email.trim() ? email.trim() : base.email,
+      id: decoded.uid,
+      name: cleanName,
+      email: decoded.email,
+      role: validRole,
+      organization: cleanOrg,
+      accentHex: accentForRole(validRole),
     };
-    const token = signAuthToken(user);
-    store.addAudit('Auth Gateway', 'USER_SIGNED_IN', `${user.name} (${user.role}) signed in.`);
-    res.json({ user, token });
+
+    verifiedSessions.set(decoded.uid, user);
+    store.addAudit(
+      'Firebase Auth',
+      'USER_AUTHENTICATED',
+      `${user.name} (${user.email}) authenticated as ${user.role}.`
+    );
+    res.json({ user });
   });
 
   app.get('/api/workspace', (_req, res) => {
@@ -335,8 +450,8 @@ async function startServer() {
   // DRIVER PROFILE, BOOKINGS, SAFE EXTENSIONS & CHECK-IN/OUT
   // =========================================================================
 
-  app.post('/api/driver/profile', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/driver/profile', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const {
       fullName,
@@ -384,17 +499,27 @@ async function startServer() {
     });
   });
 
-  app.post('/api/bookings/hold', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/hold', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { spaceId, vehicleId, driverName, driverEmail, driverLicense, startMin, endMin } =
       req.body ?? {};
+    const matchedProfile = store.driverProfiles.find(
+      (p) => p.email.toLowerCase() === (typeof driverEmail === 'string' ? driverEmail : user.email).toLowerCase()
+    );
+    const effectiveLicense = String(driverLicense || matchedProfile?.licenseNumber || '').trim();
+    if (user.role === 'driver' && effectiveLicense.length < 6) {
+      res.status(400).json({
+        error: 'Please complete your driver profile (Driving License & Vehicle Number) before booking.',
+      });
+      return;
+    }
     const result = store.createTransactionalHold({
       spaceId: String(spaceId),
       vehicleId: String(vehicleId),
-      driverName: String(driverName || user.name),
+      driverName: String(driverName || matchedProfile?.fullName || user.name),
       driverEmail: typeof driverEmail === 'string' ? driverEmail : user.email,
-      driverLicense: typeof driverLicense === 'string' ? driverLicense : undefined,
+      driverLicense: effectiveLicense || undefined,
       startMin: Number(startMin),
       endMin: Number(endMin),
     });
@@ -405,8 +530,8 @@ async function startServer() {
     res.status(201).json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/action', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/:id/action', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { id } = req.params;
     const { action, arrivalMinutesLate } = req.body ?? {};
@@ -421,8 +546,8 @@ async function startServer() {
     res.json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/extend', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/:id/extend', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { id } = req.params;
     const addMinutes = Number(req.body?.additionalMinutes || 30);
@@ -441,8 +566,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/bookings/:id/extensions/:reqId/decide', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/bookings/:id/extensions/:reqId/decide', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const { id, reqId } = req.params;
     const decision = req.body?.decision === 'reject' ? 'reject' : 'approve';
@@ -454,8 +579,8 @@ async function startServer() {
     res.json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/withdrawal-resolve', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/:id/withdrawal-resolve', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const choice = req.body?.choice === 'rebook' ? 'rebook' : 'refund';
     const result = store.resolveAffectedWithdrawal(req.params.id, choice);
@@ -466,8 +591,8 @@ async function startServer() {
     res.json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/qr-checkin', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/:id/qr-checkin', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { scannedToken, scanMethod, arrivalMinutesLate } = req.body ?? {};
     const bk = store.bookings.find((b) => b.id === req.params.id);
@@ -500,8 +625,8 @@ async function startServer() {
     res.json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/overstay', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/bookings/:id/overstay', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const overstayMinutes = Number(req.body?.overstayMinutes || 45);
     const result = store.reportOverstay({
@@ -521,8 +646,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/bookings/:id/overstay-resolve', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/bookings/:id/overstay-resolve', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const choice = req.body?.choice === 'reschedule' ? 'reschedule' : 'refund_with_credit';
     const result = store.resolveOverstayImpact(req.params.id, choice);
@@ -533,8 +658,190 @@ async function startServer() {
     res.json({ booking: result.booking, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/bookings/:id/review', (req, res) => {
-    const user = requireAuth(req, res);
+  // =========================================================================
+  // PREPAID WALLET, HOST SCANNER, SMART DEPARTURE & AUTONOMOUS LIFECYCLE
+  // =========================================================================
+
+  app.get('/api/wallet', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const wallet = store.getOrCreateWallet(user.email, user.name);
+    res.json({ wallet });
+  });
+
+  app.post('/api/wallet/topup', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const amountInr = Number(req.body?.amountInr || 0);
+    const result = store.topUpWallet(user.email, user.name, amountInr);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ wallet: result.wallet, snapshot: store.getSnapshot() });
+  });
+
+  app.post('/api/bookings/:id/pay-wallet', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const result = store.payHoldWithWallet(req.params.id, user.email, user.name);
+    if (!result.ok) {
+      res.status(409).json({ error: result.error, wallet: result.wallet });
+      return;
+    }
+    res.json({ booking: result.booking, wallet: result.wallet, snapshot: store.getSnapshot() });
+  });
+
+  app.post('/api/host/scanner/verify-entry', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
+    if (!user) return;
+    const { scannedInput, expectedFacilityId, arrivalMinutesLate } = req.body ?? {};
+    const result = store.verifyDriverQrAtHostScanner({
+      scannedInput: String(scannedInput || ''),
+      expectedFacilityId: typeof expectedFacilityId === 'string' && expectedFacilityId ? expectedFacilityId : undefined,
+      actorName: user.name,
+      arrivalMinutesLate: typeof arrivalMinutesLate === 'number' ? arrivalMinutesLate : undefined,
+    });
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({
+      booking: result.booking,
+      lifecycleEvent: result.lifecycleEvent,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/agents/lifecycle/evaluate', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const { bookingId, requestedExtensionMinutes, simulateOverstayMinutes } = req.body ?? {};
+    if (!bookingId) {
+      res.status(400).json({ error: 'bookingId is required.' });
+      return;
+    }
+    const bk = store.bookings.find((b) => b.id === String(bookingId));
+    if (!bk) {
+      res.status(404).json({ error: 'Booking not found' });
+      return;
+    }
+    if (
+      user.role === 'driver' &&
+      bk.driverEmail &&
+      bk.driverEmail.toLowerCase() !== user.email.toLowerCase()
+    ) {
+      res.status(403).json({ error: 'Forbidden: you can only evaluate your own active booking.' });
+      return;
+    }
+    const result = await evaluateAutonomousOverstayLifecycle({
+      bookingId: String(bookingId),
+      requestedExtensionMinutes:
+        typeof requestedExtensionMinutes === 'number' ? requestedExtensionMinutes : undefined,
+      simulateOverstayMinutes:
+        typeof simulateOverstayMinutes === 'number' ? simulateOverstayMinutes : undefined,
+      actorName: user.name,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({
+      booking: result.booking,
+      space: result.space,
+      offer: result.offer,
+      impactedBookings: result.impactedBookings,
+      wallet: result.wallet,
+      lifecycleEvent: result.lifecycleEvent,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/bookings/:id/extension-offers/:offerId/respond', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const decision = req.body?.decision === 'decline' ? 'decline' : 'accept';
+    const result = store.respondToExtensionOffer({
+      bookingId: req.params.id,
+      offerId: req.params.offerId,
+      decision,
+      actorEmail: user.email,
+      actorName: user.name,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.error, wallet: result.wallet });
+      return;
+    }
+    res.json({
+      booking: result.booking,
+      offer: result.offer,
+      wallet: result.wallet,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/bookings/:id/departure-signal', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const signalType =
+      req.body?.signalType === 'geofence_exit' ? 'geofence_exit' : 'im_leaving_button';
+    const distanceFromGateM =
+      typeof req.body?.distanceFromGateM === 'number' ? req.body.distanceFromGateM : undefined;
+    const result = store.recordSmartDepartureSignal({
+      bookingId: req.params.id,
+      signalType,
+      distanceFromGateM,
+      actorName: user.name,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({
+      booking: result.booking,
+      lifecycleEvent: result.lifecycleEvent,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/bookings/:id/confirm-departure', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const confirmedBy = user.role === 'host' || user.role === 'admin' ? 'host' : 'driver';
+    const result = store.confirmDepartureAndStartClearance({
+      bookingId: req.params.id,
+      confirmedBy,
+      actorName: user.name,
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({
+      booking: result.booking,
+      wallet: result.wallet,
+      lifecycleEvent: result.lifecycleEvent,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/spaces/:spaceId/complete-clearance', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const result = store.completeClearanceBufferAndReopen(req.params.spaceId, user.name);
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({
+      space: result.space,
+      lifecycleEvent: result.lifecycleEvent,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/bookings/:id/review', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { id } = req.params;
     const { rating, comment, authorName } = req.body ?? {};
@@ -555,8 +862,8 @@ async function startServer() {
   // SERVER-GENERATED PAYMENT ORDERS & SIGNED IDEMPOTENT WEBHOOKS
   // =========================================================================
 
-  app.post('/api/payments/orders', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/payments/orders', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const bookingId = String(req.body?.bookingId || '');
     const result = store.createPaymentOrder(bookingId);
@@ -598,8 +905,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/payments/orders/:orderId/gateway-dispatch', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/payments/orders/:orderId/gateway-dispatch', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const outcome =
       req.body?.outcome === 'payment.failed' ? 'payment.failed' : 'payment.succeeded';
@@ -623,8 +930,8 @@ async function startServer() {
   // PROVIDER ONBOARDING, EVIDENCE UPLOAD, CALENDAR BLOCKS & WITHDRAWALS
   // =========================================================================
 
-  app.post('/api/providers/register', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/providers/register', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const {
       name,
@@ -674,8 +981,8 @@ async function startServer() {
     res.status(201).json({ provider: result.provider, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/providers/:providerId/evidence', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/providers/:providerId/evidence', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const { docType, fileName, mimeType, contentText, verificationStatus, status } = req.body ?? {};
     const result = store.submitProviderEvidence({
@@ -703,8 +1010,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/facilities', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/facilities', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const {
       providerId,
@@ -758,8 +1065,8 @@ async function startServer() {
     res.status(201).json({ ...created, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/spaces/:spaceId/pricing', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/spaces/:spaceId/pricing', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const { hourlyPriceInr, hardDepartureMin, restrictions } = req.body ?? {};
     const result = store.updateSpacePricingAndRestrictions({
@@ -776,8 +1083,8 @@ async function startServer() {
     res.json({ space: result.space, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/spaces/:spaceId/owner-blocks', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/spaces/:spaceId/owner-blocks', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const { startMin, endMin, label } = req.body ?? {};
     const result = store.addOwnerUseBlock({
@@ -797,8 +1104,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/spaces/:spaceId/withdraw', (req, res) => {
-    const user = requireAuth(req, res, ['host', 'admin']);
+  app.post('/api/spaces/:spaceId/withdraw', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
     if (!user) return;
     const { startMin, endMin, reason } = req.body ?? {};
     const result = store.withdrawFutureAvailability({
@@ -823,8 +1130,8 @@ async function startServer() {
   // ADMIN VERIFICATION, PRIVATE DOCUMENT ACCESS LINKS & SPACE APPROVAL
   // =========================================================================
 
-  app.post('/admin/providers/:provider_id/verification', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/admin/providers/:provider_id/verification', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { provider_id } = req.params;
     const { decision, evidenceRefs, reviewerId, reason, expiresAt } = req.body ?? {};
@@ -845,8 +1152,8 @@ async function startServer() {
     res.json({ provider: result.provider, snapshot: store.getSnapshot() });
   });
 
-  app.post('/admin/spaces/:space_id/approve', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/admin/spaces/:space_id/approve', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { space_id } = req.params;
     const result = store.approveSpacePublication(space_id, admin.id);
@@ -865,8 +1172,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/admin/facilities/:id/operational-check', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/facilities/:id/operational-check', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { checks, notes, propertyEligibleForUse } = req.body ?? {};
     const result = store.updateFacilityOperationalChecks(
@@ -883,15 +1190,15 @@ async function startServer() {
     res.json({ facility: result.facility, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/periodic-review', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/periodic-review', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const summary = store.runPeriodicReviewSweep(admin.id);
     res.json({ ...summary, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/documents/:docId/access-link', (req, res) => {
-    const user = requireAuth(req, res, ['admin', 'host']);
+  app.post('/api/admin/documents/:docId/access-link', async (req, res) => {
+    const user = await requireAuth(req, res, ['admin', 'host']);
     if (!user) return;
     const meta = store.findDocumentMeta(req.params.docId);
     if (!meta) {
@@ -945,8 +1252,8 @@ async function startServer() {
     });
   });
 
-  app.post('/api/facilities/:id/verify', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/facilities/:id/verify', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { id } = req.params;
     const { status, authorityDocRef } = req.body ?? {};
@@ -963,8 +1270,8 @@ async function startServer() {
     res.json({ facility: updated, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/settlements/:id/settle', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/settlements/:id/settle', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const result = store.settleHostPayout(req.params.id, admin.id);
     if (!result.ok) {
@@ -978,8 +1285,8 @@ async function startServer() {
   // INCIDENTS, DISPUTES, USER REPORTS & NOTIFICATIONS
   // =========================================================================
 
-  app.post('/api/incidents', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/incidents', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { facilityId, bookingId, category, severity, description } = req.body ?? {};
     if (!description || !String(description).trim()) {
@@ -998,8 +1305,8 @@ async function startServer() {
     res.status(201).json({ incident: inc, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/incidents/:id', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/incidents/:id', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { status, resolutionNote } = req.body ?? {};
     const inc = store.updateIncident(
@@ -1015,8 +1322,8 @@ async function startServer() {
     res.json({ incident: inc, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/disputes', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/disputes', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { bookingId, reason, requestedRefundInr } = req.body ?? {};
     if (!bookingId || !reason) {
@@ -1036,8 +1343,8 @@ async function startServer() {
     res.status(201).json({ dispute: result.dispute, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/disputes/:id/resolve', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/disputes/:id/resolve', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const decision = req.body?.decision === 'dismissed' ? 'dismissed' : 'refunded';
     const result = store.resolveDispute(
@@ -1053,8 +1360,8 @@ async function startServer() {
     res.json({ dispute: result.dispute, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/reports', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/reports', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const { reportedEntity, reason } = req.body ?? {};
     if (!reportedEntity || !reason) {
@@ -1069,8 +1376,8 @@ async function startServer() {
     res.status(201).json({ report, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/admin/reports/:id', (req, res) => {
-    const admin = requireAuth(req, res, ['admin']);
+  app.post('/api/admin/reports/:id', async (req, res) => {
+    const admin = await requireAuth(req, res, ['admin']);
     if (!admin) return;
     const { status, moderatorNote } = req.body ?? {};
     const rep = store.moderateUserReport(
@@ -1086,8 +1393,8 @@ async function startServer() {
     res.json({ report: rep, snapshot: store.getSnapshot() });
   });
 
-  app.post('/api/notifications/:id/read', (req, res) => {
-    const user = requireAuth(req, res);
+  app.post('/api/notifications/:id/read', async (req, res) => {
+    const user = await requireAuth(req, res);
     if (!user) return;
     const ntf = store.notifications.find((n) => n.id === req.params.id);
     if (ntf) ntf.read = true;

@@ -1,0 +1,423 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Global Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isEmailVerified() && (
+        request.auth.token.email == 'anuak2628@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUser(data) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'email',
+          'role',
+          'organization',
+          'emailVerified',
+          'createdAt',
+          'updatedAt',
+          'lastLoginAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'email',
+          'photoURL',
+          'role',
+          'organization',
+          'emailVerified',
+          'createdAt',
+          'updatedAt',
+          'lastLoginAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        data.role in ['driver', 'host', 'admin'] &&
+        data.organization is string && data.organization.size() >= 1 && data.organization.size() <= 120 &&
+        data.emailVerified is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.lastLoginAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDriverProfile(data) {
+      return data.keys().hasAll([
+          'uid',
+          'fullName',
+          'email',
+          'phone',
+          'licenseNumber',
+          'licenseValidTill',
+          'wheelerCategory',
+          'vehicleType',
+          'vehicleModel',
+          'plateNumber',
+          'isEv',
+          'registeredVehicleId',
+          'verified',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'fullName',
+          'email',
+          'phone',
+          'licenseNumber',
+          'licenseValidTill',
+          'wheelerCategory',
+          'vehicleType',
+          'vehicleModel',
+          'plateNumber',
+          'isEv',
+          'registeredVehicleId',
+          'verified',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 100 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 30 &&
+        data.licenseNumber is string && data.licenseNumber.size() >= 4 && data.licenseNumber.size() <= 40 &&
+        data.licenseValidTill is string && data.licenseValidTill.size() >= 4 && data.licenseValidTill.size() <= 20 &&
+        data.wheelerCategory in ['two_wheeler', 'four_wheeler'] &&
+        data.vehicleType in ['two_wheeler', 'hatchback', 'sedan', 'suv'] &&
+        data.vehicleModel is string && data.vehicleModel.size() >= 1 && data.vehicleModel.size() <= 80 &&
+        data.plateNumber is string && data.plateNumber.size() >= 3 && data.plateNumber.size() <= 30 &&
+        data.isEv is bool &&
+        isValidId(data.registeredVehicleId) &&
+        data.verified is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProvider(data) {
+      return data.keys().hasAll([
+          'id',
+          'ownerUid',
+          'name',
+          'contactName',
+          'contactEmail',
+          'contactPhone',
+          'organizationName',
+          'providerType',
+          'verificationStatus',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'ownerUid',
+          'name',
+          'contactName',
+          'contactEmail',
+          'contactPhone',
+          'organizationName',
+          'registrationNumber',
+          'providerType',
+          'verificationStatus',
+          'reviewerId',
+          'decisionReason',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.contactName is string && data.contactName.size() >= 1 && data.contactName.size() <= 100 &&
+        data.contactEmail is string && data.contactEmail.size() >= 3 && data.contactEmail.size() <= 160 &&
+        data.contactPhone is string && data.contactPhone.size() >= 5 && data.contactPhone.size() <= 30 &&
+        data.organizationName is string && data.organizationName.size() >= 1 && data.organizationName.size() <= 140 &&
+        (!('registrationNumber' in data) || (data.registrationNumber is string && data.registrationNumber.size() <= 80)) &&
+        data.providerType in [
+          'commercial_operator',
+          'mall_office',
+          'property_owner',
+          'property_manager',
+          'apartment_residential'
+        ] &&
+        data.verificationStatus in [
+          'NOT_SUBMITTED',
+          'SUBMITTED',
+          'UNDER_REVIEW',
+          'NEEDS_MORE_INFORMATION',
+          'APPROVED',
+          'REJECTED',
+          'SUSPENDED',
+          'EXPIRED'
+        ] &&
+        (!('reviewerId' in data) || (data.reviewerId is string && data.reviewerId.size() <= 128)) &&
+        (!('decisionReason' in data) || (data.decisionReason is string && data.decisionReason.size() <= 400)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'id',
+          'driverUid',
+          'driverEmail',
+          'spaceId',
+          'facilityId',
+          'facilityName',
+          'spaceCode',
+          'status',
+          'paymentStatus',
+          'totalAmountInr',
+          'startMin',
+          'endMin',
+          'qrVerified',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'driverUid',
+          'driverEmail',
+          'spaceId',
+          'facilityId',
+          'facilityName',
+          'spaceCode',
+          'status',
+          'paymentStatus',
+          'totalAmountInr',
+          'startMin',
+          'endMin',
+          'qrVerified',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.driverUid) &&
+        data.driverEmail is string && data.driverEmail.size() >= 3 && data.driverEmail.size() <= 160 &&
+        isValidId(data.spaceId) &&
+        isValidId(data.facilityId) &&
+        data.facilityName is string && data.facilityName.size() >= 1 && data.facilityName.size() <= 160 &&
+        data.spaceCode is string && data.spaceCode.size() >= 1 && data.spaceCode.size() <= 64 &&
+        data.status in ['held', 'confirmed', 'checked-in', 'occupied', 'completed', 'cancelled', 'expired'] &&
+        data.paymentStatus in ['unpaid', 'pending_order', 'paid', 'failed', 'refunded'] &&
+        data.totalAmountInr is number && data.totalAmountInr >= 0 && data.totalAmountInr <= 1000000 &&
+        data.startMin is number && data.startMin >= 0 && data.startMin < 1440 &&
+        data.endMin is number && data.endMin > data.startMin && data.endMin <= 1440 &&
+        data.qrVerified is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isEmailVerified() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().email == request.auth.token.email &&
+        incoming().emailVerified == true &&
+        (incoming().role in ['driver', 'host'] || (incoming().role == 'admin' && isAdmin())) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().lastLoginAt == request.time;
+      allow update: if isEmailVerified() &&
+        isValidId(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().lastLoginAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().emailVerified == existing().emailVerified &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName',
+              'photoURL',
+              'organization',
+              'updatedAt',
+              'lastLoginAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(adminUid) && isAdmin();
+    }
+
+    match /driverProfiles/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isEmailVerified() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidDriverProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        (incoming().verified == false || isAdmin()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isEmailVerified() &&
+        isValidId(userId) &&
+        isValidDriverProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().verified == existing().verified &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName',
+              'email',
+              'phone',
+              'licenseNumber',
+              'licenseValidTill',
+              'wheelerCategory',
+              'vehicleType',
+              'vehicleModel',
+              'plateNumber',
+              'isEv',
+              'registeredVehicleId',
+              'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    match /providers/{providerId} {
+      allow get: if isValidId(providerId) && (isAdmin() || (isSignedIn() && existing().ownerUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isEmailVerified() &&
+        isValidId(providerId) &&
+        isValidProvider(incoming()) &&
+        incoming().id == providerId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().verificationStatus in ['NOT_SUBMITTED', 'SUBMITTED'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isEmailVerified() &&
+        isValidId(providerId) &&
+        isValidProvider(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid &&
+            !(existing().verificationStatus in ['REJECTED', 'SUSPENDED']) &&
+            incoming().verificationStatus in ['NOT_SUBMITTED', 'SUBMITTED'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'contactName',
+              'contactEmail',
+              'contactPhone',
+              'organizationName',
+              'registrationNumber',
+              'providerType',
+              'verificationStatus',
+              'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(providerId) && isAdmin();
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && (isAdmin() || (isSignedIn() && existing().driverUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.driverUid == request.auth.uid);
+      allow create: if isEmailVerified() &&
+        isValidId(bookingId) &&
+        isValidBooking(incoming()) &&
+        incoming().id == bookingId &&
+        incoming().driverUid == request.auth.uid &&
+        incoming().status == 'held' &&
+        incoming().paymentStatus in ['unpaid', 'pending_order'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isEmailVerified() &&
+        isValidId(bookingId) &&
+        isValidBooking(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().driverUid == existing().driverUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            existing().driverUid == request.auth.uid &&
+            !(existing().status in ['completed', 'cancelled', 'expired']) &&
+            incoming().totalAmountInr == existing().totalAmountInr &&
+            incoming().paymentStatus == existing().paymentStatus &&
+            incoming().status in ['held', 'checked-in', 'completed', 'cancelled'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'qrVerified',
+              'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(bookingId) && isAdmin();
+    }
+  }
+}
