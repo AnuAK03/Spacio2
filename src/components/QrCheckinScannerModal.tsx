@@ -91,7 +91,7 @@ export const QrCheckinScannerModal: React.FC<QrCheckinScannerModalProps> = ({
           />
 
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs font-bold text-[#111827]">
-            <span>Gate PIN:</span>
+            <span>Spot Access PIN:</span>
             <span className="rounded-lg bg-white px-2.5 py-1 font-mono text-sm text-[#4338CA] border border-black/[0.08]">
               {booking.accessCode}
             </span>
@@ -127,13 +127,13 @@ export const QrCheckinScannerModal: React.FC<QrCheckinScannerModalProps> = ({
               <span>
                 {booking.status === 'checked-in' || booking.status === 'occupied'
                   ? 'You are checked in'
-                  : 'Confirmed & Paid — Live Gate Pass'}
+                  : 'Confirmed & Paid — Parking Spot Pass'}
               </span>
             </div>
             <p className="mt-1 text-xs text-emerald-900">
-              Show this live QR code to the parking guard or entrance scanner when you arrive. Saving
-              screenshots/images is disabled for gate security; if no attendant is present, use Scan
-              Wall QR from your active booking card.
+              Show this live QR code to the parking attendant or entrance scanner when you arrive. Saving
+              screenshots/images is disabled for parking spot security; if no attendant is present, use Scan
+              Spot Wall QR from your active booking card.
             </p>
           </div>
 

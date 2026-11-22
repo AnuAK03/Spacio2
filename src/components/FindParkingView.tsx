@@ -1685,8 +1685,8 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                   </div>
                   <p className="mt-1 text-[11px] leading-relaxed text-indigo-900">
                     For security, your Entry QR Code stays hidden until you open{' '}
-                    <strong>Booking History &rarr; Show QR Code</strong>. If no attendant is at the
-                    gate, you can also scan the wall QR placard using <strong>Scan Wall QR</strong>.
+                    <strong>Active Bookings &rarr; Show QR Code</strong>. If no attendant is at the
+                    parking spot, you can also scan the spot wall QR placard using <strong>Scan Spot Wall QR</strong>.
                   </p>
                 </div>
 
@@ -1844,7 +1844,7 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                   </div>
                 )}
                 <div className="flex justify-between text-[#374151]">
-                  <span>Gate Entrance</span>
+                  <span>Spot Entrance</span>
                   <span className="font-semibold text-[#111827]">{targetBay.entranceLabel}</span>
                 </div>
                 <div className="flex justify-between text-[#374151]">

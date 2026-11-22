@@ -277,7 +277,7 @@ export default function App() {
     setSnapshot(data.snapshot);
     showToast(
       'success',
-      `Gate QR verified! Booking ${bookingId} status is now ${data.booking.status}.`
+      `Spot QR verified! Booking ${bookingId} status is now ${data.booking.status}.`
     );
     return { ok: true };
   };
@@ -652,7 +652,7 @@ export default function App() {
     if (data.snapshot) setSnapshot(data.snapshot);
     showToast(
       'success',
-      `Gate scan verified! ${data.booking?.id} (${data.booking?.vehiclePlate || data.booking?.vehicleLabel}) checked in -> bay OCCUPIED.`
+      `Spot scan verified! ${data.booking?.id} (${data.booking?.vehiclePlate || data.booking?.vehicleLabel}) checked in -> bay OCCUPIED.`
     );
     return { ok: true };
   };
@@ -1391,6 +1391,17 @@ export default function App() {
           onClose={() => setAssistantOpen(false)}
           vehicles={snapshot.vehicles}
           selectedVehicleId={selectedVehicleId}
+          activeBooking={snapshot.bookings.find(
+            (b) =>
+              b.driverEmail?.toLowerCase() === user.email.toLowerCase() &&
+              (b.status === 'confirmed' || b.status === 'held' || b.status === 'checked-in')
+          )}
+          wallet={
+            snapshot.wallets.find((w) => w.driverEmail.toLowerCase() === user.email.toLowerCase()) ||
+            userWallet ||
+            undefined
+          }
+          authToken={authToken}
           onCreateHold={async (params) => {
             await handleCreateHold(params);
           }}

@@ -1,16 +1,27 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronRight,
+  Clock,
+  Compass,
+  CreditCard,
+  ExternalLink,
+  Lock,
   MapPin,
   Radio,
   Send,
   ShieldCheck,
+  Sparkles,
+  UserCheck,
   X,
+  Zap,
 } from 'lucide-react';
 import {
+  BookingRecord,
   CandidateEvaluation,
-  MultiAgentWorkflowRun,
+  PrepaidWallet,
   VehicleProfile,
 } from '../types/parkpool';
 
@@ -19,6 +30,9 @@ interface AiAssistantDrawerProps {
   onClose: () => void;
   vehicles: VehicleProfile[];
   selectedVehicleId: string;
+  activeBooking?: BookingRecord;
+  wallet?: PrepaidWallet;
+  authToken?: string | null;
   onCreateHold: (params: {
     spaceId: string;
     vehicleId: string;
@@ -28,57 +42,41 @@ interface AiAssistantDrawerProps {
   onNavigateDashboard: () => void;
 }
 
-type AssistantEntry =
-  | { id: string; role: 'user'; text: string }
-  | {
-      id: string;
-      role: 'assistant';
-      kind: 'search';
-      run: MultiAgentWorkflowRun;
-    }
-  | {
-      id: string;
-      role: 'assistant';
-      kind: 'policy';
-      answer: string;
-      citations: Array<{ docId: string; title: string; section: string }>;
-    }
-  | {
-      id: string;
-      role: 'assistant';
-      kind: 'error';
-      text: string;
-    };
+interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  citations?: Array<{ docId: string; title: string; section: string }>;
+  recommendedSpots?: CandidateEvaluation[];
+  suggestedPrompts?: string[];
+  safetyNotice?: string;
+  isError?: boolean;
+}
 
-const QUICK_CHIPS: Array<{
-  label: string;
-  mode: 'search' | 'policy';
-  prompt: string;
-}> = [
+const QUICK_CHIPS = [
   {
-    label: 'Best covered EV spot',
-    mode: 'search',
-    prompt: 'Find a covered EV parking spot near Phoenix Mall from 14:00 to 17:30.',
+    label: 'How to check in to my spot?',
+    prompt: 'How do I check in to my reserved parking spot? Can I scan a spot wall QR code?',
   },
   {
-    label: 'Cheapest parking nearby',
-    mode: 'search',
-    prompt: 'Find the lowest price verified parking near Phoenix Mall from 14:00 to 17:30.',
+    label: 'Find parking spot under 300m',
+    prompt: 'Find the closest verified parking spot under 300m walk with transparent pricing.',
   },
   {
-    label: 'Closest gate under 300m',
-    mode: 'search',
-    prompt: 'Find the closest parking under 300m walk from 14:00 to 17:30.',
+    label: 'Where is my spot & directions?',
+    prompt: 'Where is my reserved parking spot located and how do I get directions to the entrance?',
   },
   {
-    label: 'Late departure policy?',
-    mode: 'policy',
-    prompt: 'What happens if I depart after the closing cutoff or need an extension?',
+    label: 'Wallet & pricing breakdown',
+    prompt: 'Explain my prepaid wallet balance, payment deduction, and the itemized price breakdown (parking, service fee, GST).',
   },
   {
-    label: 'Cancellation rules?',
-    mode: 'policy',
-    prompt: 'What are the cancellation and hold expiry rules?',
+    label: 'Late arrival & overstay rules',
+    prompt: 'What happens if I arrive 20 minutes late or stay past my scheduled time? How do extensions work?',
+  },
+  {
+    label: 'Cancellation & instant refund',
+    prompt: 'What is the cancellation policy and how quickly do I get a full refund to my wallet?',
   },
 ];
 
@@ -87,85 +85,111 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
   onClose,
   vehicles,
   selectedVehicleId,
+  activeBooking,
+  wallet,
+  authToken,
   onCreateHold,
   onNavigateDashboard,
 }) => {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [bookingBayId, setBookingBayId] = useState<string | null>(null);
-  const [entries, setEntries] = useState<AssistantEntry[]>([]);
-
-  if (!open) return null;
+  const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const activeVehicle = vehicles.find((v) => v.id === selectedVehicleId) || vehicles[0];
 
-  const runAssistant = async (prompt: string, explicitMode?: 'search' | 'policy') => {
-    const trimmed = prompt.trim();
+  useEffect(() => {
+    if (open && messages.length === 0) {
+      setMessages([
+        {
+          id: 'welcome-0',
+          role: 'assistant',
+          text: `👋 **How can I help you park today?**
+
+• **Vehicle**: ${activeVehicle?.label || 'Driver Vehicle'} (${activeVehicle?.isEv ? '⚡ EV' : activeVehicle?.vehicleType.toUpperCase()})
+• **Wallet**: ₹${wallet?.balanceInr ?? 500}
+${
+  activeBooking
+    ? `• **Current Spot**: **${activeBooking.facilityName}** (${activeBooking.spaceCode}) · Spot PIN: \`${activeBooking.accessCode}\``
+    : '• **Reservation**: No active booking right now'
+}
+
+Tap any question below or ask about finding spots, directions, check-in, or pricing.`,
+          suggestedPrompts: [
+            'How to check in to my spot?',
+            'Find parking spot under 300m',
+            'Wallet & pricing breakdown',
+          ],
+        },
+      ]);
+    }
+  }, [open, messages.length, activeVehicle, wallet?.balanceInr, activeBooking]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, busy]);
+
+  if (!open) return null;
+
+  const handleSendMessage = async (promptText: string) => {
+    const trimmed = promptText.trim();
     if (!trimmed || busy) return;
 
-    const inferredPolicy =
-      explicitMode === 'policy' ||
-      (!explicitMode &&
-        /policy|cancel|refund|cutoff|late|rule|fee|gst|extension/i.test(trimmed));
-
-    setEntries((prev) => [
-      ...prev,
-      { id: `u-${Date.now()}`, role: 'user', text: trimmed },
-    ]);
+    const userMsgId = `u-${Date.now()}`;
+    const newMsg: AssistantMessage = { id: userMsgId, role: 'user', text: trimmed };
+    setMessages((prev) => [...prev, newMsg]);
     setInput('');
     setBusy(true);
 
     try {
-      if (inferredPolicy) {
-        const res = await fetch('/api/rag/ask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: trimmed }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Policy assistant failed');
-        setEntries((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: 'assistant',
-            kind: 'policy',
-            answer: data.answer,
-            citations: data.citations || [],
-          },
-        ]);
-      } else {
-        const res = await fetch('/api/agents/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: trimmed,
-            vehicleId: activeVehicle?.id || 'VEH-SUV-01',
-            defaultStartTime: '14:00',
-            defaultEndTime: '17:30',
-            faultInjectionEnabled: false,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Assistant search failed');
-        setEntries((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: 'assistant',
-            kind: 'search',
-            run: data as MultiAgentWorkflowRun,
-          },
-        ]);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
       }
+
+      const res = await fetch('/api/assistant/chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          question: trimmed,
+          vehicleId: activeVehicle?.id,
+          activeBookingId: activeBooking?.id,
+          history: messages.slice(-4).map((m) => ({ role: m.role, text: m.text })),
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || `Server responded with status ${res.status}`);
+      }
+
+      const data = await res.json();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          text: data.answer || 'I evaluated your request.',
+          citations: data.citations || [],
+          recommendedSpots: data.recommendedSpots,
+          suggestedPrompts: data.suggestedPrompts,
+          safetyNotice: data.safetyNotice,
+        },
+      ]);
     } catch (err: unknown) {
-      setEntries((prev) => [
+      setMessages((prev) => [
         ...prev,
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
-          kind: 'error',
-          text: err instanceof Error ? err.message : 'Unable to reach assistant.',
+          text:
+            err instanceof Error
+              ? `⚠️ ${err.message}`
+              : '⚠️ Unable to complete request. Please try again.',
+          isError: true,
         },
       ]);
     } finally {
@@ -173,17 +197,14 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     }
   };
 
-  const handleBookCandidate = async (
-    cand: CandidateEvaluation,
-    run: MultiAgentWorkflowRun
-  ) => {
+  const handleBookCandidateSpot = async (cand: CandidateEvaluation) => {
     setBookingBayId(cand.spaceId);
     try {
       await onCreateHold({
         spaceId: cand.spaceId,
-        vehicleId: run.vehicle.id,
-        startMin: run.requestedStartMin,
-        endMin: run.requestedEndMin,
+        vehicleId: activeVehicle.id,
+        startMin: 600,
+        endMin: 720,
       });
       onClose();
       onNavigateDashboard();
@@ -192,43 +213,129 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-[3px]">
-      <div className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
-        {/* Vibrant Ride-App Assistant Header */}
-        <div className="flex items-center justify-between border-b border-black/[0.06] bg-white/95 px-5 py-4 text-[#111827] backdrop-blur-xl">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#4338CA] to-[#C83709] text-white shadow-sm">
-              <Bot className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="font-display text-base font-bold">AI Parking Assistant</h2>
-              <p className="text-[11px] text-[#4B5563]">
-                Verified by Supervisor · {activeVehicle?.label}
-              </p>
-            </div>
+  // Render markdown text neatly (bold, code blocks, lists, headings)
+  const renderFormattedContent = (content: string) => {
+    const lines = content.split('\n');
+    return lines.map((line, idx) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return <div key={idx} className="h-1.5" />;
+      }
+      if (trimmed.startsWith('### ')) {
+        return (
+          <h4 key={idx} className="font-display text-sm font-bold text-[#111827] mt-1.5 mb-1">
+            {trimmed.slice(4)}
+          </h4>
+        );
+      }
+      if (trimmed.startsWith('#### ')) {
+        return (
+          <h5 key={idx} className="font-display text-xs font-bold text-[#111827] mt-1.5 mb-0.5">
+            {trimmed.slice(5)}
+          </h5>
+        );
+      }
+      if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        return (
+          <div key={idx} className="flex items-start gap-1.5 ml-1 text-xs leading-relaxed text-[#374151]">
+            <span className="text-[#C83709] font-bold">•</span>
+            <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed.slice(2)) }} />
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close AI Assistant"
-            className="rounded-lg p-1.5 text-[#4B5563] hover:bg-black/[0.05] hover:text-[#111827]"
-          >
-            <X className="h-4 w-4" />
-          </button>
+        );
+      }
+      if (/^\d+\.\s/.test(trimmed)) {
+        const num = trimmed.match(/^(\d+\.)\s/)?.[1] || '•';
+        const rest = trimmed.replace(/^\d+\.\s/, '');
+        return (
+          <div key={idx} className="flex items-start gap-1.5 ml-1 text-xs leading-relaxed text-[#374151]">
+            <span className="font-semibold text-[#4338CA] shrink-0">{num}</span>
+            <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(rest) }} />
+          </div>
+        );
+      }
+      return (
+        <p
+          key={idx}
+          className="text-xs leading-relaxed text-[#374151]"
+          dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed) }}
+        />
+      );
+    });
+  };
+
+  const formatInlineMarkdown = (text: string): string => {
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-[#111827]">$1</strong>')
+      .replace(/`([^`]+)`/g, '<code class="rounded bg-black/[0.06] px-1 py-0.5 font-mono text-[11px] text-[#4338CA]">$1</code>');
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/35 backdrop-blur-[2px]"
+      role="dialog"
+      aria-modal="true"
+      aria-label="AI Parking Assistant"
+    >
+      <div className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+        {/* Top Header */}
+        <div className="border-b border-black/[0.08] bg-white px-4 py-3.5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#4338CA] via-[#7C3AED] to-[#C83709] text-white shadow-md">
+                <Sparkles className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h2 className="truncate font-display text-sm font-bold text-[#111827]">
+                    Driver Assistant
+                  </h2>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold text-[#047857]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Online
+                  </span>
+                </div>
+                <p className="truncate text-[11px] text-[#4B5563]">
+                  {activeVehicle?.label} · ₹{wallet?.balanceInr ?? 500} balance
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close AI Assistant"
+              className="shrink-0 rounded-lg border border-black/[0.08] p-1.5 text-[#4B5563] hover:bg-black/[0.05] hover:text-[#111827]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* Privacy & Safety Guarantee Strip */}
+          <div className="mt-2.5 flex items-center justify-between rounded-lg bg-[#F8F7F4] px-2.5 py-1 text-[10px] text-[#4B5563]">
+            <span className="flex items-center gap-1 font-semibold text-[#047857]">
+              <ShieldCheck className="h-3 w-3" />
+              <span>Driver Privacy Enforced</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <Lock className="h-2.5 w-2.5 text-[#4338CA]" />
+              <span>Encrypted Session</span>
+            </span>
+          </div>
         </div>
 
-        {/* Quick Multi-Choice Chips */}
-        <div className="border-b border-black/[0.06] bg-[#F8F7F4] px-4 py-3">
-          <div className="mb-2 text-[11px] font-semibold text-[#4B5563]">Quick Questions</div>
-          <div className="flex flex-wrap gap-1.5">
+        {/* Quick Suggestion Chips */}
+        <div className="border-b border-black/[0.06] bg-[#F8F7F4] px-4 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-[#4B5563]">
+            <span>Suggested Questions</span>
+            <span className="text-[10px] font-normal text-[#9CA3AF]">Tap to ask</span>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
             {QUICK_CHIPS.map((chip) => (
               <button
                 key={chip.label}
                 type="button"
                 disabled={busy}
-                onClick={() => void runAssistant(chip.prompt, chip.mode)}
-                className="rounded-lg border border-black/[0.08] bg-white px-2.5 py-1.5 text-xs font-medium text-[#111827] transition-colors hover:border-[#D93F0B] hover:text-[#C83709] disabled:opacity-50"
+                onClick={() => void handleSendMessage(chip.prompt)}
+                className="whitespace-nowrap rounded-lg border border-black/[0.08] bg-white px-2.5 py-1 text-[11px] font-medium text-[#111827] shadow-xs transition-colors hover:border-[#D93F0B] hover:text-[#C83709] disabled:opacity-50"
               >
                 {chip.label}
               </button>
@@ -236,100 +343,146 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           </div>
         </div>
 
-        {/* Messages Feed */}
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
-          {entries.length === 0 && (
-            <div className="rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-4 text-xs text-[#374151]">
-              <div className="flex items-center gap-1.5 font-semibold text-[#111827]">
-                <ShieldCheck className="h-4 w-4 text-[#4338CA]" />
-                <span>How can I help?</span>
-              </div>
-              <p className="mt-1.5 leading-relaxed">
-                Pick a quick question above or ask me to find verified spots, compare walk
-                distances, or check parking policies.
-              </p>
-            </div>
-          )}
-
-          {entries.map((entry) => {
-            if (entry.role === 'user') {
+        {/* Messages Scroll Area */}
+        <div className="flex-1 space-y-3.5 overflow-y-auto p-4 bg-[#FAF9F6]">
+          {messages.map((msg) => {
+            if (msg.role === 'user') {
               return (
-                <div key={entry.id} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-2xl bg-[#4338CA] px-3.5 py-2.5 text-xs text-white shadow-sm">
-                    {entry.text}
+                <div key={msg.id} className="flex justify-end">
+                  <div className="max-w-[85%] rounded-2xl bg-[#4338CA] px-3.5 py-2.5 text-xs font-medium text-white shadow-sm">
+                    {msg.text}
                   </div>
                 </div>
               );
             }
 
-            if (entry.kind === 'error') {
-              return (
-                <div
-                  key={entry.id}
-                  className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700"
-                >
-                  {entry.text}
-                </div>
-              );
-            }
-
-            if (entry.kind === 'policy') {
-              return (
-                <div
-                  key={entry.id}
-                  className="space-y-2 rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-3.5 text-xs text-[#111827]"
-                >
-                  <p className="leading-relaxed">{entry.answer}</p>
-                  {entry.citations.length > 0 && (
-                    <div className="border-t border-black/[0.06] pt-2 text-[11px] text-[#4B5563]">
-                      Source: {entry.citations.map((c) => c.title).join(' · ')}
-                    </div>
-                  )}
-                </div>
-              );
-            }
-
-            const topBays = entry.run.recommendedCandidates.slice(0, 3);
             return (
               <div
-                key={entry.id}
-                className="space-y-2.5 rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-3.5 text-xs"
+                key={msg.id}
+                className={`space-y-2.5 rounded-2xl border p-4 shadow-xs ${
+                  msg.isError
+                    ? 'border-rose-200 bg-rose-50'
+                    : 'border-black/[0.07] bg-white'
+                }`}
               >
-                <div className="flex items-center gap-1.5 font-semibold text-[#047857]">
-                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                  <span>Supervisor Verified Match</span>
+                {/* Agent Header Tag */}
+                <div className="flex items-center justify-between gap-2 border-b border-black/[0.04] pb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Bot className="h-3.5 w-3.5 text-[#4338CA]" />
+                    <span className="text-[11px] font-bold text-[#111827]">
+                      ParkPool Driver Agent
+                    </span>
+                  </div>
+                  <span className="flex items-center gap-1 text-[10px] font-semibold text-[#047857]">
+                    <CheckCircle2 className="h-3 w-3" />
+                    <span>Verified Policy Safe</span>
+                  </span>
                 </div>
-                <p className="leading-relaxed text-[#374151]">
-                  {entry.run.supervisorFinalReport}
-                </p>
 
-                {topBays.length > 0 && (
-                  <div className="space-y-2 pt-1">
-                    {topBays.map((cand) => (
+                {/* Safety Alert if applicable */}
+                {msg.safetyNotice && (
+                  <div className="flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                    <span>{msg.safetyNotice}</span>
+                  </div>
+                )}
+
+                {/* Formatted Content */}
+                <div className="space-y-1">{renderFormattedContent(msg.text)}</div>
+
+                {/* Recommended Spot Cards if searching */}
+                {msg.recommendedSpots && msg.recommendedSpots.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-black/[0.05]">
+                    <div className="text-[11px] font-bold text-[#111827]">
+                      Recommended Spots (Fits {activeVehicle.label}):
+                    </div>
+                    {msg.recommendedSpots.map((cand) => (
                       <div
                         key={cand.spaceId}
-                        className="flex items-center justify-between gap-2 rounded-xl border border-black/[0.06] bg-white p-2.5"
+                        className="rounded-xl border border-black/[0.08] bg-[#F8F7F4] p-3 transition-colors hover:border-[#D93F0B]"
                       >
-                        <div className="min-w-0">
-                          <div className="truncate font-display text-xs font-bold text-[#111827]">
-                            {cand.facilityName}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate font-display text-xs font-bold text-[#111827]">
+                              {cand.facilityName}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-[#4B5563]">
+                              Spot {cand.spaceCode} · Spot Entrance: {cand.entranceLabel}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] font-semibold text-[#047857]">
+                              <span className="flex items-center gap-0.5">
+                                <MapPin className="h-3 w-3 text-[#C83709]" />
+                                {cand.walkingDistanceM}m walk
+                              </span>
+                              <span>·</span>
+                              <span>₹{cand.hourlyPriceInr}/hr</span>
+                              {cand.evCharging && (
+                                <>
+                                  <span>·</span>
+                                  <span className="flex items-center gap-0.5 text-emerald-700">
+                                    <Zap className="h-2.5 w-2.5" />
+                                    EV Ready
+                                  </span>
+                                </>
+                              )}
+                            </div>
                           </div>
-                          <div className="mt-0.5 flex items-center gap-1 text-[11px] text-[#4B5563]">
-                            <MapPin className="h-3 w-3 text-[#C83709]" />
-                            <span>
-                              {cand.spaceCode} · {cand.walkingDistanceM}m · ₹{cand.totalQuoteInr}
-                            </span>
-                          </div>
+                          <button
+                            type="button"
+                            disabled={bookingBayId === cand.spaceId}
+                            onClick={() => void handleBookCandidateSpot(cand)}
+                            className="whitespace-nowrap shrink-0 rounded-lg bg-gradient-to-r from-[#E0430D] to-[#C83709] px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:brightness-110 disabled:opacity-50"
+                          >
+                            {bookingBayId === cand.spaceId ? 'Reserving...' : 'Book Spot'}
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          disabled={bookingBayId === cand.spaceId}
-                          onClick={() => void handleBookCandidate(cand, entry.run)}
-                          className="whitespace-nowrap shrink-0 rounded-lg bg-gradient-to-r from-[#E0430D] to-[#C83709] px-3 py-1.5 text-xs font-bold text-white hover:brightness-110 disabled:opacity-50"
-                        >
-                          {bookingBayId === cand.spaceId ? '...' : 'Book'}
-                        </button>
                       </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Direct Action Button if driver has active booking */}
+                {activeBooking && (
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onNavigateDashboard();
+                      }}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/70 py-2 text-xs font-bold text-[#4338CA] hover:bg-indigo-100"
+                    >
+                      <Compass className="h-3.5 w-3.5" />
+                      <span>View Active Booking &amp; Spot Directions</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Citations Pill */}
+                {msg.citations && msg.citations.length > 0 && (
+                  <div className="border-t border-black/[0.04] pt-2 flex flex-wrap gap-1 text-[10px] text-[#6B7280]">
+                    <span className="font-semibold text-[#4B5563]">Verified Sources:</span>
+                    {msg.citations.map((c) => (
+                      <span key={c.docId} className="rounded bg-black/[0.04] px-1.5 py-0.5">
+                        {c.docId} ({c.section})
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Follow-up Prompts */}
+                {msg.suggestedPrompts && msg.suggestedPrompts.length > 0 && (
+                  <div className="pt-1 flex flex-wrap gap-1">
+                    {msg.suggestedPrompts.map((sPrompt, sIdx) => (
+                      <button
+                        key={sIdx}
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleSendMessage(sPrompt)}
+                        className="rounded-full border border-black/[0.08] bg-white px-2.5 py-1 text-[10px] font-medium text-[#4338CA] hover:border-[#4338CA] hover:bg-indigo-50/50 disabled:opacity-50"
+                      >
+                        {sPrompt}
+                      </button>
                     ))}
                   </div>
                 )}
@@ -338,36 +491,46 @@ export const AiAssistantDrawer: React.FC<AiAssistantDrawerProps> = ({
           })}
 
           {busy && (
-            <div className="flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs font-medium text-[#4338CA]">
-              <Radio className="h-4 w-4 animate-spin" />
-              <span>Checking availability & Supervisor rules...</span>
+            <div className="flex items-center gap-2.5 rounded-2xl border border-indigo-200 bg-white p-3.5 text-xs text-[#4338CA] shadow-xs">
+              <Radio className="h-4 w-4 animate-spin text-[#4338CA]" />
+              <span className="font-medium">
+                Consulting GenAI Agent &amp; verifying safety rules...
+              </span>
             </div>
           )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        {/* Bottom Input */}
+        {/* Bottom Input Area */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            void runAssistant(input);
+            void handleSendMessage(input);
           }}
-          className="flex items-center gap-2 border-t border-black/[0.06] bg-white p-3.5"
+          className="border-t border-black/[0.08] bg-white p-3.5"
         >
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about parking or policies..."
-            className="flex-1 rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-xs text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
-          />
-          <button
-            type="submit"
-            disabled={busy || !input.trim()}
-            aria-label="Send message"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#4338CA] text-white hover:bg-[#3730A3] disabled:opacity-50"
-          >
-            <Send className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask anything about parking, directions, or policies..."
+              className="flex-1 rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-xs text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={busy || !input.trim()}
+              aria-label="Send message"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#4338CA] to-[#C83709] text-white shadow-xs hover:brightness-110 disabled:opacity-50"
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="mt-1.5 flex items-center justify-between text-[10px] text-[#6B7280]">
+            <span>Upholding driver privacy &amp; transparent pricing</span>
+            <span>ParkPool Agent v2</span>
+          </div>
         </form>
       </div>
     </div>

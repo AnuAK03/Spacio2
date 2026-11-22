@@ -264,7 +264,7 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
                   {b.facilityName} · Spot {b.spaceCode} (
                   {b.status === 'checked-in' || b.status === 'occupied'
                     ? 'Checked In'
-                    : 'Drive to Gate'}
+                    : 'Drive to Parking Spot'}
                   )
                 </option>
               ))}
@@ -431,7 +431,7 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
             role="img"
             aria-label={
               isCheckedIn && activeBooking
-                ? `Animated route showing vehicle moving from gate into spot ${activeBooking.spaceCode}`
+                ? `Animated route showing vehicle parked in spot ${activeBooking.spaceCode}`
                 : `Animated route showing drive from ${originLabel} to ${activeFacility.name}`
             }
           >
@@ -509,7 +509,7 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
               fontWeight="700"
               fill="#111827"
             >
-              {isCheckedIn ? 'Entry Gate' : 'Start Point'}
+              {isCheckedIn ? 'Spot Entrance' : 'Start Point'}
             </text>
 
             {/* Mid Checkpoint */}
@@ -554,7 +554,7 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
               fontWeight="700"
               fill={isCheckedIn ? '#047857' : '#C83709'}
             >
-              {isCheckedIn && activeBooking ? `Spot ${activeBooking.spaceCode}` : 'Parking Gate'}
+              {isCheckedIn && activeBooking ? `Spot ${activeBooking.spaceCode}` : 'Parking Spot'}
             </text>
 
             {/* CSS-Animated Moving Vehicle Marker */}
@@ -597,12 +597,12 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
           </span>
           {activeBooking ? (
             <span className="font-mono text-[11px] font-semibold text-[#4338CA]">
-              {activeBooking.vehiclePlate || activeBooking.vehicleLabel} · Gate PIN{' '}
+              {activeBooking.vehiclePlate || activeBooking.vehicleLabel} · Spot Access PIN{' '}
               {activeBooking.accessCode}
             </span>
           ) : (
             <span className="text-[11px] font-medium text-[#4B5563]">
-              Book a spot to unlock gate bay tracking
+              Book a spot to unlock live spot tracking
             </span>
           )}
         </div>

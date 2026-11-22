@@ -83,7 +83,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
   ) => {
     const cleaned = token.trim();
     if (!cleaned) {
-      setStatusError('No QR token detected. Point camera at the gate wall QR or upload a clear photo.');
+      setStatusError('No QR token detected. Point camera at the spot wall QR or upload a clear photo.');
       return;
     }
     setStatusError(null);
@@ -98,7 +98,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
         stopCamera();
         onClose();
       } else {
-        setStatusError(res.error || 'Gate wall QR verification failed.');
+        setStatusError(res.error || 'Spot wall QR verification failed.');
       }
     } finally {
       setSubmitting(false);
@@ -112,7 +112,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setCameraError(
-        'Camera access is unavailable in this browser context. Upload a photo of the wall QR or verify using the gate placard tab.'
+        'Camera access is unavailable in this browser context. Upload a photo of the wall QR or verify using the spot wall placard tab.'
       );
       return;
     }
@@ -162,7 +162,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
       window.setTimeout(attachAndScan, 80);
     } catch {
       setCameraError(
-        'Camera permission was denied or no camera was detected. You can upload a photo of the wall QR or scan the gate wall placard below.'
+        'Camera permission was denied or no camera was detected. You can upload a photo of the spot wall QR or scan the spot wall placard below.'
       );
       setCameraActive(false);
     }
@@ -191,7 +191,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
         const decoded = jsQR(imgData.data, imgData.width, imgData.height);
         if (!decoded?.data) {
           setStatusError(
-            'Could not find a valid ParkPool QR code in that photo. Try a sharper image or use the Gate Placard option.'
+            'Could not find a valid ParkPool QR code in that photo. Try a sharper image or use the Spot Wall Placard option.'
           );
           return;
         }
@@ -211,7 +211,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/55 p-3 sm:p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
-      aria-label="Scan Wall QR for Self Check-In"
+      aria-label="Scan Spot Wall QR for Self Check-In"
     >
       <div className="relative my-auto w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl border-2 border-[#4338CA] bg-white p-4 sm:p-6 shadow-2xl">
         {/* Header */}
@@ -220,11 +220,11 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
             <div className="flex items-center gap-2">
               <ScanLine className="h-5 w-5 shrink-0 text-[#4338CA]" />
               <h2 className="truncate font-display text-base sm:text-lg font-bold text-[#111827]">
-                Backup Self Check-In · Scan Wall QR
+                Backup Self Check-In · Scan Spot Wall QR
               </h2>
             </div>
             <p className="mt-0.5 text-xs text-[#4B5563]">
-              No attendant at {booking.facilityName}? Scan the mounted wall QR placard at{' '}
+              Self checking in at {booking.facilityName}? Scan the mounted wall QR placard at Spot Entrance{' '}
               <strong className="text-[#111827]">{booking.entranceLabel}</strong> to check in to Spot{' '}
               {booking.spaceCode}.
             </p>
@@ -289,7 +289,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
             }`}
           >
             <QrCode className="h-3.5 w-3.5" />
-            <span>Wall Placard</span>
+            <span>Spot Wall Placard</span>
           </button>
         </div>
 
@@ -317,7 +317,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
         {detectedToken && (
           <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs text-emerald-900">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-[#047857]" />
-            <span className="truncate font-mono">QR detected — verifying gate signature...</span>
+            <span className="truncate font-mono">QR detected — verifying spot check-in signature...</span>
           </div>
         )}
 
@@ -341,10 +341,10 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
               <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-black/[0.14] bg-white px-4 py-8">
                 <Camera className="h-9 w-9 text-[#4338CA]" />
                 <div className="mt-2 font-display text-sm font-bold text-[#111827]">
-                  Point Camera at Entrance Wall QR
+                  Point Camera at Spot Wall QR Placard
                 </div>
                 <p className="mt-1 max-w-xs text-xs text-[#4B5563]">
-                  Uses live device camera to verify the signed ParkPool wall placard at{' '}
+                  Uses live device camera to verify the signed ParkPool wall placard at Spot Entrance{' '}
                   {booking.entranceLabel}.
                 </p>
               </div>
@@ -395,10 +395,10 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
           <div className="mt-4 space-y-3 rounded-2xl border border-black/[0.08] bg-[#F8F7F4] p-5 text-center">
             <Upload className="mx-auto h-9 w-9 text-[#4338CA]" />
             <div className="font-display text-sm font-bold text-[#111827]">
-              Upload Photo of Wall QR Placard
+              Upload Photo of Spot Wall QR Placard
             </div>
             <p className="text-xs text-[#4B5563]">
-              Take or select a photo of the QR code mounted near the parking gate wall.
+              Take or select a photo of the QR code mounted near the parking spot entrance wall.
             </p>
             <input
               ref={fileInputRef}
@@ -426,12 +426,12 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
               <div className="flex flex-col items-center rounded-xl border border-emerald-200 bg-white p-3.5 text-center">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-[#047857]">
                   <ShieldCheck className="h-4 w-4" />
-                  <span>Gate Wall Placard · {booking.entranceLabel}</span>
+                  <span>Spot Wall Placard · {booking.entranceLabel}</span>
                 </div>
                 <QrCodeDisplay
                   value={gateToken}
                   size={132}
-                  label={`Gate wall QR for ${booking.facilityName}`}
+                  label={`Spot wall QR for ${booking.facilityName}`}
                 />
                 <p className="mt-2 text-[11px] text-[#4B5563]">
                   Verified signed wall placard stationed at {booking.facilityName}.
@@ -446,7 +446,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
                   <span>
                     {submitting
                       ? 'Checking In...'
-                      : `Verify Wall QR & Check In to Spot ${booking.spaceCode}`}
+                      : `Verify Spot Wall QR & Check In to Spot ${booking.spaceCode}`}
                   </span>
                 </button>
               </div>
@@ -458,7 +458,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
                 className="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-[#111827]"
               >
                 <KeyRound className="h-3.5 w-3.5 text-[#4338CA]" />
-                <span>Or Enter Wall QR Token / Gate Code</span>
+                <span>Or Enter Spot Wall QR Token / Spot PIN</span>
               </label>
               <div className="flex gap-2">
                 <input
@@ -466,7 +466,7 @@ export const WallQrScannerModal: React.FC<WallQrScannerModalProps> = ({
                   type="text"
                   value={manualToken}
                   onChange={(e) => setManualToken(e.target.value)}
-                  placeholder="PKP-GATE:... or Gate PIN"
+                  placeholder="PKP-GATE:... or Spot PIN"
                   className="min-w-0 flex-1 rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 font-mono text-xs text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
                 />
                 <button

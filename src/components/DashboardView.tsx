@@ -38,7 +38,6 @@ import {
   UserSession,
 } from '../types/parkpool';
 import { GoogleParkingMap } from './GoogleParkingMap';
-import { LiveTrackingPanel } from './LiveTrackingPanel';
 import { QrCheckinScannerModal } from './QrCheckinScannerModal';
 import { WallQrScannerModal } from './WallQrScannerModal';
 
@@ -452,16 +451,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </section>
       )}
 
-      {/* Simplified CSS-Animated Live Tracking (Route to Park & Check-In Bay Path) */}
-      <LiveTrackingPanel
-        bookings={activeBookings}
-        facilities={facilities}
-        locations={locations}
-        onCheckInBooking={async (bookingId) => {
-          await onBookingAction(bookingId, 'checkin');
-        }}
-        onOpenMapDirections={(bookingId) => setNavBookingId(bookingId)}
-      />
 
       {/* Active Reservations — Entry QR Revealed Only Upon Pressing Show QR Code */}
       <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-5 sm:p-6 shadow-sm backdrop-blur-md">
@@ -540,7 +529,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </span>
                         <span aria-hidden="true">·</span>
                         <span>
-                          Gate PIN:{' '}
+                          Spot Access PIN:{' '}
                           <strong className="font-mono text-[#4338CA]">{bk.accessCode}</strong>
                         </span>
                       </div>
@@ -556,7 +545,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <p className="text-xs text-[#4B5563]">
                         {bk.status === 'held'
                           ? 'Complete payment within 10 minutes to lock this spot.'
-                          : 'Tap Show QR Code when presenting at the gate, or tap Scan Wall QR if no attendant is present.'}
+                          : 'Tap Show QR Code when arriving at your spot, or tap Scan Spot Wall QR if no attendant is present.'}
                       </p>
 
                       {bk.overstayStatus === 'flagged_overstay' && (
@@ -957,7 +946,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-indigo-200 bg-indigo-50/75 px-3 py-2 text-xs font-bold text-[#4338CA] hover:bg-indigo-100"
                                 >
                                   <ScanLine className="h-3.5 w-3.5" />
-                                  <span>Scan Wall QR</span>
+                                  <span>Scan Spot Wall QR</span>
                                 </button>
                               </>
                             )}
@@ -975,7 +964,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-[#4338CA] hover:bg-indigo-50"
                             >
                               <Navigation className="h-3.5 w-3.5" />
-                              <span>Gate Directions</span>
+                              <span>Parking Spot Directions</span>
                             </button>
                             <button
                               type="button"
@@ -1334,18 +1323,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/55 p-3 sm:p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label="Live Gate Directions"
+          aria-label="Live Parking Spot Directions"
         >
           <div className="relative my-auto w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border-2 border-[#1A73E8] bg-white p-4 sm:p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3 border-b border-black/[0.06] pb-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 font-display text-base sm:text-lg font-bold text-[#111827]">
                   <Navigation className="h-4 w-4 shrink-0 text-[#1A73E8]" />
-                  <span className="truncate">Live Directions · {navFacility.name}</span>
+                  <span className="truncate">Parking Spot Directions · {navFacility.name}</span>
                 </div>
                 <p className="mt-0.5 text-xs text-[#4B5563]">
                   {navFacility.address} ({navFacility.zone}) · Spot{' '}
-                  <strong className="text-[#111827]">{navBooking.spaceCode}</strong> · Gate PIN{' '}
+                  <strong className="text-[#111827]">{navBooking.spaceCode}</strong> · Spot Access PIN{' '}
                   <span className="font-mono font-bold text-[#4338CA]">
                     {navBooking.accessCode}
                   </span>
@@ -1388,15 +1377,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <div className="mt-3.5 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
               <div className="rounded-xl bg-[#F8F7F4] p-3.5">
-                <div className="font-semibold text-[#4B5563]">Place &amp; Gate Entrance</div>
+                <div className="font-semibold text-[#4B5563]">Place &amp; Spot Entrance</div>
                 <div className="mt-1 font-bold text-[#111827]">{navFacility.name}</div>
                 <div className="mt-0.5 text-[#374151]">{navFacility.address}</div>
                 <div className="mt-1 font-semibold text-[#C83709]">
-                  Gate: {navFacility.entranceLabel} · Spot {navBooking.spaceCode}
+                  Spot Entrance: {navFacility.entranceLabel} · Spot {navBooking.spaceCode}
                 </div>
               </div>
               <div className="rounded-xl bg-[#F8F7F4] p-3.5">
-                <div className="font-semibold text-[#4B5563]">Gate Entry &amp; Walk Path</div>
+                <div className="font-semibold text-[#4B5563]">Spot Entry &amp; Walk Path</div>
                 <div className="mt-1 text-[#111827]">{navFacility.accessInstructions}</div>
                 <div className="mt-1 font-semibold text-[#047857]">
                   {navFacility.accessControl} · {navFacility.walkPathSafety}

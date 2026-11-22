@@ -128,7 +128,7 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
           )}
 
           <div className="mt-3 text-xs font-bold text-[#111827]">
-            Gate PIN: <span className="font-mono text-[#4338CA]">{booking.accessCode}</span>
+            Spot Access PIN: <span className="font-mono text-[#4338CA]">{booking.accessCode}</span>
           </div>
 
           <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-[#047857]">
@@ -218,11 +218,11 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
           <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-xs text-emerald-950">
             <div className="flex items-center gap-1.5 font-bold">
               <ShieldCheck className="h-4 w-4 shrink-0 text-[#047857]" />
-              <span>Ready for Gate Entry</span>
+              <span>Ready for Spot Entry &amp; Arrival</span>
             </div>
             <p className="mt-1 text-xs leading-relaxed text-emerald-900">
-              You do not need to scan anything. Simply show this QR code (or share your Gate PIN)
-              with the gate attendant or kiosk when you arrive.
+              You do not need to scan anything. Simply show this QR code (or share your Spot Access PIN)
+              at the parking spot entrance or kiosk when you arrive.
             </p>
           </div>
 

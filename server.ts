@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import {
+  askDriverGenAiAgent,
   askPolicyRagAssistant,
   evaluateAutonomousOverstayLifecycle,
   runSupervisedMultiAgentWorkflow,
@@ -406,15 +407,50 @@ async function startServer() {
     }
   });
 
-  app.post('/api/rag/ask', async (req, res) => {
+  app.post('/api/assistant/chat', async (req, res) => {
     try {
-      const { question } = req.body ?? {};
+      const user = await extractBearerUser(req);
+      const { question, vehicleId, activeBookingId, history } = req.body ?? {};
       const cleanQuestion = typeof question === 'string' ? question.trim() : '';
-      if (!cleanQuestion || cleanQuestion.length > 2000) {
-        res.status(400).json({ error: 'A valid policy question (1–2000 chars) is required.' });
+      if (!cleanQuestion || cleanQuestion.length > 2500) {
+        res.status(400).json({ error: 'A valid question (1–2500 chars) is required.' });
         return;
       }
-      const answer = await askPolicyRagAssistant(cleanQuestion);
+      const response = await askDriverGenAiAgent({
+        question: cleanQuestion,
+        userEmail: user?.email,
+        userName: user?.name,
+        userRole: user?.role,
+        vehicleId: typeof vehicleId === 'string' && vehicleId.trim() ? vehicleId.trim() : undefined,
+        activeBookingId:
+          typeof activeBookingId === 'string' && activeBookingId.trim()
+            ? activeBookingId.trim()
+            : undefined,
+        history: Array.isArray(history) ? history : undefined,
+      });
+      res.json(response);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Assistant failed to generate response.';
+      console.error('[Driver Agent Error]', err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/api/rag/ask', async (req, res) => {
+    try {
+      const user = await extractBearerUser(req);
+      const { question } = req.body ?? {};
+      const cleanQuestion = typeof question === 'string' ? question.trim() : '';
+      if (!cleanQuestion || cleanQuestion.length > 2500) {
+        res.status(400).json({ error: 'A valid policy question (1–2500 chars) is required.' });
+        return;
+      }
+      const answer = await askDriverGenAiAgent({
+        question: cleanQuestion,
+        userEmail: user?.email,
+        userName: user?.name,
+        userRole: user?.role,
+      });
       res.json(answer);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Policy RAG query failed.';

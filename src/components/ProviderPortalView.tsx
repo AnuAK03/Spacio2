@@ -685,7 +685,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                     type="text"
                     value={entranceLabel}
                     onChange={(e) => setEntranceLabel(e.target.value)}
-                    placeholder="Entrance Gate"
+                    placeholder="Spot Entrance"
                     className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs text-[#111827]"
                   />
                   <input
@@ -710,7 +710,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   required
                   value={accessInstructions}
                   onChange={(e) => setAccessInstructions(e.target.value)}
-                  placeholder="Gate access instructions"
+                  placeholder="Spot access instructions"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-xs text-[#111827]"
                 />
                 <input
@@ -1027,7 +1027,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
       {/* TAB 3: SINGLE HOST SCANNER, LIVE BAY OCCUPANCY, EXTENSION APPROVALS & BOOKINGS */}
       {subTab === 'bookings' && (
         <div className="space-y-6">
-          {/* Top Row: Single Host Gate Scanner Terminal + Live Bay Occupancy & Clearance Board */}
+          {/* Top Row: Single Host Spot Entry Scanner Terminal + Live Bay Occupancy & Clearance Board */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
             {/* Single Host Scanner Terminal (Entry Point) */}
             <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-5">
@@ -1036,7 +1036,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                 <h2>Single Host Entry Scanner</h2>
               </div>
               <p className="mt-0.5 text-xs text-[#4B5563]">
-                Your single kiosk/guard scanner reads each arriving driver&apos;s Booking QR pass or Gate PIN, verifies their plate, sets booking to <span className="font-mono font-semibold">checked-in</span>, and marks the bay <span className="font-mono font-semibold">OCCUPIED</span>.
+                Your single kiosk/guard scanner reads each arriving driver&apos;s Booking QR pass or Spot Access PIN, verifies their plate, sets booking to <span className="font-mono font-semibold">checked-in</span>, and marks the bay <span className="font-mono font-semibold">OCCUPIED</span>.
               </p>
 
               <form
@@ -1065,7 +1065,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   type="text"
                   value={scannerInput}
                   onChange={(e) => setScannerInput(e.target.value)}
-                  placeholder="Paste driver QR JSON/token, Gate PIN (PKP-...), or Booking ID"
+                  placeholder="Paste driver QR JSON/token, Spot Access PIN (PKP-...), or Booking ID"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 font-mono text-xs text-[#111827]"
                 />
                 <button
@@ -1074,7 +1074,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#047857] px-4 py-2 text-xs font-bold text-white hover:bg-[#065F46] disabled:opacity-50"
                 >
                   <QrCode className="h-4 w-4" />
-                  <span>{scannerBusy ? 'Verifying Driver Pass...' : 'Verify Driver QR & Open Gate'}</span>
+                  <span>{scannerBusy ? 'Verifying Driver Pass...' : 'Verify Driver QR & Confirm Spot Entry'}</span>
                 </button>
               </form>
 
@@ -1493,7 +1493,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
                 >
                   <option value="vehicle_overstay">Vehicle Overstay</option>
-                  <option value="access_blocked">Gate Access Blocked</option>
+                  <option value="access_blocked">Spot Access Blocked</option>
                   <option value="safety_hazard">Safety / Hazard</option>
                   <option value="other">Other</option>
                 </select>

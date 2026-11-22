@@ -931,7 +931,7 @@ const LeafletFallbackMap: React.FC<LeafletFallbackMapProps> = ({
         `<div style="font-size:12px;min-width:190px;">
           <div style="font-weight:700;color:#111827;">${fac.name}</div>
           <div style="color:#4B5563;margin-top:2px;">${fac.address}</div>
-          <div style="color:#C83709;font-weight:600;margin-top:3px;">Gate: ${fac.entranceLabel}</div>
+          <div style="color:#C83709;font-weight:600;margin-top:3px;">Spot Entrance: ${fac.entranceLabel}</div>
         </div>`
       );
     });
@@ -1340,7 +1340,7 @@ export const GoogleParkingMap: React.FC<GoogleParkingMapProps> = ({
                 <div className="font-bold text-[#111827]">{infoFac.name}</div>
                 <div className="text-[11px] text-[#4B5563]">{infoFac.address}</div>
                 <div className="font-semibold text-[#C83709]">
-                  Gate: {infoFac.entranceLabel}
+                  Spot Entrance: {infoFac.entranceLabel}
                 </div>
                 <button
                   type="button"
