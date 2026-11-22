@@ -724,6 +724,61 @@ export default function App() {
     );
   };
 
+  const handleUpdateFacility = async (facilityId: string, payload: Partial<Facility>) => {
+    const res = await apiFetch(`/api/facilities/${facilityId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not update facility');
+      return;
+    }
+    setSnapshot(data.snapshot);
+    showToast('success', 'Facility updated successfully.');
+  };
+
+  const handleDeleteFacility = async (facilityId: string) => {
+    const res = await apiFetch(`/api/facilities/${facilityId}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not delete facility');
+      return;
+    }
+    setSnapshot(data.snapshot);
+    showToast('success', 'Facility removed.');
+  };
+
+  const handleAssignFacilityDriver = async (facilityId: string, driverEmail?: string) => {
+    const res = await apiFetch(`/api/facilities/${facilityId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ driverEmail }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not assign driver');
+      return;
+    }
+    setSnapshot(data.snapshot);
+    showToast('success', driverEmail ? `Facility assigned to ${driverEmail}` : 'Driver assignment cleared.');
+  };
+
+  const handleCancelBookingHost = async (bookingId: string, reason: string) => {
+    const res = await apiFetch(`/api/bookings/${bookingId}/cancel-host`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not cancel booking');
+      return;
+    }
+    setSnapshot(data.snapshot);
+    showToast('success', 'Booking cancelled by host and wallet refunded.');
+  };
+
   const handleUpdateSpacePricing = async (
     spaceId: string,
     payload: { hourlyPriceInr: number; hardDepartureMin: number; restrictions: string[] }
@@ -1346,6 +1401,10 @@ export default function App() {
                 onConfirmDeparture={handleConfirmDeparture}
                 onCompleteClearance={handleCompleteClearance}
                 onSubmitIncident={handleSubmitIncident}
+                onUpdateFacility={handleUpdateFacility}
+                onDeleteFacility={handleDeleteFacility}
+                onAssignFacilityDriver={handleAssignFacilityDriver}
+                onCancelBookingHost={handleCancelBookingHost}
               />
             )}
 

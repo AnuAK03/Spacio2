@@ -1229,6 +1229,52 @@ async function startServer() {
     });
   });
 
+  app.put('/api/facilities/:id', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
+    if (!user) return;
+    const result = store.updateFacility(req.params.id, req.body ?? {}, user.name);
+    if (!result.ok) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+    res.json({ facility: result.facility, snapshot: store.getSnapshot() });
+  });
+
+  app.delete('/api/facilities/:id', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
+    if (!user) return;
+    const result = store.deleteFacility(req.params.id, user.name);
+    if (!result.ok) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, snapshot: store.getSnapshot() });
+  });
+
+  app.post('/api/facilities/:id/assign', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
+    if (!user) return;
+    const { driverEmail } = req.body ?? {};
+    const result = store.assignFacilityDriver(req.params.id, driverEmail, user.name);
+    if (!result.ok) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+    res.json({ facility: result.facility, snapshot: store.getSnapshot() });
+  });
+
+  app.post('/api/bookings/:id/cancel-host', async (req, res) => {
+    const user = await requireAuth(req, res, ['host', 'admin']);
+    if (!user) return;
+    const { reason } = req.body ?? {};
+    const result = store.cancelBookingHost(req.params.id, String(reason || 'Host cancellation'), user.name);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ booking: result.booking, snapshot: store.getSnapshot() });
+  });
+
   // =========================================================================
   // ADMIN VERIFICATION, PRIVATE DOCUMENT ACCESS LINKS & SPACE APPROVAL
   // =========================================================================

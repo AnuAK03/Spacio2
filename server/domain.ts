@@ -5655,6 +5655,70 @@ class ParkPoolStore {
     return { facility: newFac, space: newSpace };
   }
 
+  public deleteFacility(facilityId: string, actorName: string): { ok: boolean; error?: string } {
+    const idx = this.facilities.findIndex((f) => f.id === facilityId);
+    if (idx === -1) return { ok: false, error: 'Facility not found' };
+    const fac = this.facilities[idx];
+    const spaceIds = new Set(this.spaces.filter((s) => s.facilityId === facilityId).map((s) => s.id));
+    this.facilities.splice(idx, 1);
+    this.spaces = this.spaces.filter((s) => !spaceIds.has(s.facilityId));
+    this.bookings = this.bookings.filter((b) => b.facilityId !== facilityId);
+    this.addAudit(actorName, 'FACILITY_DELETED', `Deleted facility ${fac.name} (${facilityId}) and associated spaces.`);
+    return { ok: true };
+  }
+
+  public updateFacility(facilityId: string, updates: Partial<Facility>, actorName: string): { ok: boolean; facility?: Facility; error?: string } {
+    const fac = this.facilities.find((f) => f.id === facilityId);
+    if (!fac) return { ok: false, error: 'Facility not found' };
+    if (updates.name) fac.name = updates.name;
+    if (updates.address) fac.address = updates.address;
+    if (updates.entranceLabel) fac.entranceLabel = updates.entranceLabel;
+    if (updates.accessInstructions) fac.accessInstructions = updates.accessInstructions;
+    fac.lastUpdatedIso = new Date().toISOString();
+    this.addAudit(actorName, 'FACILITY_UPDATED', `Updated facility ${fac.name} (${facilityId}).`);
+    return { ok: true, facility: fac };
+  }
+
+  public assignFacilityDriver(facilityId: string, driverEmail?: string, actorName?: string): { ok: boolean; facility?: Facility; error?: string } {
+    const fac = this.facilities.find((f) => f.id === facilityId);
+    if (!fac) return { ok: false, error: 'Facility not found' };
+    (fac as any).assignedDriverEmail = driverEmail || undefined;
+    this.addAudit(actorName || 'Host', 'FACILITY_DRIVER_ASSIGNED', `Assigned facility ${fac.name} to driver ${driverEmail || 'None'}.`);
+    return { ok: true, facility: fac };
+  }
+
+  public cancelBookingHost(bookingId: string, reason: string, actorName: string): { ok: boolean; booking?: BookingRecord; error?: string } {
+    const bk = this.bookings.find((b) => b.id === bookingId);
+    if (!bk) return { ok: false, error: 'Booking not found' };
+    if (bk.status === 'cancelled' || bk.status === 'completed') {
+      return { ok: false, error: `Booking is already ${bk.status}` };
+    }
+    bk.status = 'cancelled';
+    bk.paymentStatus = 'refunded';
+    const wallet = this.getOrCreateWallet(bk.driverEmail, bk.driverName);
+    wallet.balanceInr += bk.totalAmountInr;
+    wallet.ledger.unshift({
+      id: `LEDG-REF-${Date.now().toString(36).toUpperCase()}`,
+      timestamp: new Date().toISOString(),
+      type: 'refund',
+      bookingId: bk.id,
+      amountInr: bk.totalAmountInr,
+      balanceAfterInr: wallet.balanceInr,
+      description: `Host cancellation refund for ${bk.facilityName} (${reason})`,
+    });
+    this.refunds.push({
+      id: `REF-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+      bookingId: bk.id,
+      driverEmail: bk.driverEmail,
+      amountInr: bk.totalAmountInr,
+      reason: `Host cancellation: ${reason}`,
+      status: 'refunded',
+      createdAt: new Date().toISOString(),
+    });
+    this.addAudit(actorName, 'BOOKING_CANCELLED_BY_HOST', `Cancelled booking ${bk.id} and refunded ₹${bk.totalAmountInr} to driver.`);
+    return { ok: true, booking: bk };
+  }
+
   public updateSpacePricingAndRestrictions(input: {
     spaceId: string;
     hourlyPriceInr?: number;

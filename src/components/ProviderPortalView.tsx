@@ -6,15 +6,20 @@ import {
   Calendar,
   CheckCircle2,
   Clock,
+  Download,
   FileCheck2,
+  FileText,
   IndianRupee,
   Lock,
   Plus,
   QrCode,
   ScanLine,
+  Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
   Upload,
+  UserCheck,
   XCircle,
 } from 'lucide-react';
 import { QrCodeDisplay } from './QrCodeDisplay';
@@ -114,6 +119,10 @@ interface ProviderPortalViewProps {
     severity: IncidentRecord['severity'];
     description: string;
   }) => Promise<void>;
+  onUpdateFacility: (facilityId: string, payload: Partial<Facility>) => Promise<void>;
+  onDeleteFacility: (facilityId: string) => Promise<void>;
+  onAssignFacilityDriver: (facilityId: string, driverEmail?: string) => Promise<void>;
+  onCancelBookingHost: (bookingId: string, reason: string) => Promise<void>;
 }
 
 const PROVIDER_TYPES: Array<{ id: DetailedProviderType; label: string }> = [
@@ -173,6 +182,10 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
   onConfirmDeparture,
   onCompleteClearance,
   onSubmitIncident,
+  onUpdateFacility,
+  onDeleteFacility,
+  onAssignFacilityDriver,
+  onCancelBookingHost,
 }) => {
   const matchedProvider = useMemo(
     () =>
@@ -194,6 +207,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
     matchedProvider?.providerType || 'property_owner'
   );
   const [regBusy, setRegBusy] = useState(false);
+  const [regSavedSuccess, setRegSavedSuccess] = useState(false);
 
   // Evidence upload state
   const checklist = evidenceChecklists[matchedProvider?.providerType || detailedType] || [];
@@ -208,9 +222,9 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
   const [facName, setFacName] = useState('');
   const [selectedLocId, setSelectedLocId] = useState(locations[0]?.id || 'LOC-PHX');
   const [address, setAddress] = useState('Kodigehalli Main Rd, Bengaluru');
-  const [entranceLabel, setEntranceLabel] = useState('Main Sliding Gate');
+  const [entranceLabel, setEntranceLabel] = useState('Main Spot Entrance');
   const [accessInstructions, setAccessInstructions] = useState(
-    'Scan booking QR or enter gate PIN at keypad; park in designated bay.'
+    'Scan booking QR or enter Spot Access PIN at keypad; park in designated bay.'
   );
   const [restrictionsText, setRestrictionsText] = useState(
     'Max height 210cm, No overnight stay past closing time'
@@ -226,6 +240,16 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
     'suv',
   ]);
   const [facBusy, setFacBusy] = useState(false);
+
+  // Facility Editing Modal / State
+  const [editingFacilityId, setEditingFacilityId] = useState<string | null>(null);
+  const [editFacName, setEditFacName] = useState('');
+  const [editFacAddress, setEditFacAddress] = useState('');
+  const [editEntranceLabel, setEditEntranceLabel] = useState('');
+
+  // Booking Search & Filters
+  const [bookingSearch, setBookingSearch] = useState('');
+  const [bookingStatusFilter, setBookingStatusFilter] = useState<'all' | 'confirmed' | 'checked-in' | 'completed' | 'cancelled'>('all');
 
   // Calendar, Blocks & Withdrawals state
   const ownFacilities = useMemo(() => {
@@ -248,7 +272,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
   const [blockStartHour, setBlockStartHour] = useState(16);
   const [blockEndHour, setBlockEndHour] = useState(18);
   const [blockLabel, setBlockLabel] = useState('Host Personal Vehicle Window');
-  const [withdrawReason, setWithdrawReason] = useState('Scheduled gate maintenance');
+  const [withdrawReason, setWithdrawReason] = useState('Scheduled facility maintenance');
 
   // Pricing edit state
   const [editPrice, setEditPrice] = useState<number>(activeSpace?.hourlyPriceInr || 45);
@@ -259,7 +283,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
     activeSpace?.restrictions.join(', ') || ''
   );
 
-  // Incident & Host Gate Scanner state
+  // Incident & Host Scanner state
   const [incCategory, setIncCategory] = useState<IncidentRecord['category']>('vehicle_overstay');
   const [incSeverity, setIncSeverity] = useState<IncidentRecord['severity']>('medium');
   const [incDesc, setIncDesc] = useState('');
@@ -269,6 +293,22 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
 
   const ownFacIds = new Set(ownFacilities.map((f) => f.id));
   const ownBookings = bookings.filter((b) => ownFacIds.has(b.facilityId));
+  
+  const filteredOwnBookings = useMemo(() => {
+    return ownBookings.filter((b) => {
+      const q = bookingSearch.toLowerCase();
+      const matchQ =
+        !q ||
+        b.id.toLowerCase().includes(q) ||
+        b.driverName.toLowerCase().includes(q) ||
+        (b.vehiclePlate && b.vehiclePlate.toLowerCase().includes(q)) ||
+        b.spaceCode.toLowerCase().includes(q);
+      const matchStatus =
+        bookingStatusFilter === 'all' || b.status === bookingStatusFilter;
+      return matchQ && matchStatus;
+    });
+  }, [ownBookings, bookingSearch, bookingStatusFilter]);
+
   const pendingExtensions = bookings.flatMap((bk) =>
     bk.extensionRequests
       .filter((r) => r.status === 'pending_host_approval')
@@ -288,6 +328,72 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
     );
   };
 
+  const downloadSettlementInvoice = (stl: HostSettlementRecord) => {
+    const content = `PARKPOOL AI - HOST SETTLEMENT INVOICE
+----------------------------------------
+Settlement ID: ${stl.id}
+Provider: ${stl.providerName}
+Booking ID: ${stl.bookingId}
+Gross Amount: ₹${stl.grossInr}
+Platform Commission (10%): ₹${stl.platformCommissionInr}
+Net Payout: ₹${stl.netPayoutInr}
+Status: ${stl.status.toUpperCase()}
+UTR Reference: ${stl.utrRef || 'PENDING'}
+Settled At: ${stl.settledAt ? new Date(stl.settledAt).toLocaleString() : 'Pending'}
+----------------------------------------
+ParkPool Automated Clearing House Bengaluru`;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${stl.id}_settlement_invoice.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportBookingsCsv = () => {
+    const headers = ['BookingID', 'SpaceCode', 'DriverName', 'VehiclePlate', 'Status', 'StartMin', 'EndMin', 'TotalInr'];
+    const rows = ownBookings.map((b) => [
+      b.id,
+      b.spaceCode,
+      `"${b.driverName}"`,
+      b.vehiclePlate || 'N/A',
+      b.status,
+      b.startMin,
+      b.endMin,
+      b.totalAmountInr,
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `parkpool_host_bookings_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportSettlementsCsv = () => {
+    const headers = ['SettlementID', 'BookingID', 'GrossInr', 'CommissionInr', 'NetPayoutInr', 'Status', 'UTR'];
+    const rows = ownSettlements.map((s) => [
+      s.id,
+      s.bookingId,
+      s.grossInr,
+      s.platformCommissionInr,
+      s.netPayoutInr,
+      s.status,
+      s.utrRef || 'N/A',
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `parkpool_host_settlements_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-6">
       {/* Provider Workspace Header & Sub-Tabs */}
@@ -295,28 +401,27 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="font-display text-2xl font-bold text-[#111827]">
-              Provider Operations Portal
+              Provider Command Center
             </h1>
-            <p className="mt-0.5 text-sm text-[#4B5563]">
-              Onboarding, private evidence submission, bay calendar blocks, extensions, and payouts.
+            <p className="mt-0.5 text-xs text-[#4B5563]">
+              Manage facilities, driver assignments, dynamic calendar, verification evidence, and CSV exports.
             </p>
           </div>
           {matchedProvider && (
-            <div className="text-right text-xs">
-              <div className="text-[#4B5563]">Verification Status</div>
-              <div
-                className={`mt-0.5 font-mono text-sm font-bold ${
+            <div className="flex items-center gap-2.5 rounded-xl border border-black/[0.08] bg-[#F8F7F4] px-4 py-2 text-xs">
+              <span className="text-[#4B5563]">Verification:</span>
+              <span
+                className={`font-mono text-xs font-bold uppercase ${
                   matchedProvider.verificationStatus === 'APPROVED'
                     ? 'text-[#047857]'
                     : matchedProvider.verificationStatus === 'REJECTED' ||
-                      matchedProvider.verificationStatus === 'SUSPENDED' ||
-                      matchedProvider.verificationStatus === 'EXPIRED'
+                      matchedProvider.verificationStatus === 'SUSPENDED'
                     ? 'text-rose-700'
                     : 'text-[#C83709]'
                 }`}
               >
                 {matchedProvider.verificationStatus}
-              </div>
+              </span>
             </div>
           )}
         </div>
@@ -325,14 +430,14 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
           {(
             [
               { id: 'onboarding', label: 'Onboarding & Evidence' },
-              { id: 'facilities', label: 'Facilities & Calendar' },
+              { id: 'facilities', label: 'Facility Management & Calendar' },
               {
                 id: 'bookings',
                 label: `Bookings & Extensions${
                   pendingExtensions.length > 0 ? ` (${pendingExtensions.length})` : ''
                 }`,
               },
-              { id: 'settlements', label: 'Settlements & Incidents' },
+              { id: 'settlements', label: 'Settlements & CSV Export' },
             ] as const
           ).map((t) => (
             <button
@@ -360,15 +465,21 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
               1. Provider Registration
             </h2>
             <p className="mt-0.5 text-xs text-[#4B5563]">
-              Initial registration starts as <span className="font-mono font-semibold">NOT_SUBMITTED</span>. Only Admin verification can grant <span className="font-mono font-semibold">APPROVED</span>.
+              Initial registration starts as <span className="font-mono font-semibold">NOT_SUBMITTED</span>. Admin review grants approval.
             </p>
+
+            {regSavedSuccess && (
+              <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-[#047857]">
+                ✓ Saved Successfully!
+              </div>
+            )}
 
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
                 setRegBusy(true);
                 try {
-                  await onRegisterProvider({
+                  const res = await onRegisterProvider({
                     name: user.name,
                     contactName: user.name,
                     contactEmail: user.email,
@@ -377,6 +488,13 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                     registrationNumber: regNo || undefined,
                     providerType: detailedType,
                   });
+                  if (res) {
+                    setRegSavedSuccess(true);
+                    setOrgName('');
+                    setContactPhone('');
+                    setRegNo('');
+                    setTimeout(() => setRegSavedSuccess(false), 4000);
+                  }
                 } finally {
                   setRegBusy(false);
                 }
@@ -414,6 +532,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   required
                   value={orgName}
                   onChange={(e) => setOrgName(e.target.value)}
+                  placeholder="e.g., Brigade Gateway Bays"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-sm text-[#111827]"
                 />
               </div>
@@ -459,32 +578,33 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
           <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-display text-lg font-bold text-[#111827]">
-                2. Verification Status & Private Evidence Vault
+                2. Verification Status &amp; Private Evidence Vault
               </h2>
               <span className="flex items-center gap-1 text-xs font-semibold text-[#4338CA]">
                 <Lock className="h-3.5 w-3.5" />
-                Private Storage (Signed Links Only)
+                Private Storage
               </span>
             </div>
 
             {matchedProvider && (
               <>
-                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {/* Redone Verification Status Steps (Compact & Small) */}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
                   {VERIFICATION_STEPS.map((st) => {
                     const active = matchedProvider.verificationStatus === st;
                     return (
-                      <div
+                      <span
                         key={st}
-                        className={`rounded-xl border px-2.5 py-2 text-center text-[11px] font-mono font-bold ${
+                        className={`rounded-md border px-2 py-1 font-mono text-[10px] font-bold uppercase transition-colors ${
                           active
                             ? st === 'APPROVED'
                               ? 'border-[#047857] bg-emerald-50 text-[#047857]'
-                              : 'border-[#D93F0B] bg-[#FFF0EA] text-[#C83709]'
-                            : 'border-black/[0.06] bg-[#F8F7F4] text-[#6B7280]'
+                              : 'border-[#C83709] bg-[#FFF0EA] text-[#C83709]'
+                            : 'border-black/[0.08] bg-[#F8F7F4] text-[#6B7280]'
                         }`}
                       >
                         {st.replace(/_/g, ' ')}
-                      </div>
+                      </span>
                     );
                   })}
                 </div>
@@ -492,18 +612,6 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                 {matchedProvider.decisionReason && (
                   <div className="mt-3 rounded-xl border border-black/[0.07] bg-[#F8F7F4] px-3.5 py-2.5 text-xs text-[#374151]">
                     <strong>Admin Note:</strong> {matchedProvider.decisionReason}
-                    {matchedProvider.expiresAt ? ` · Expires ${matchedProvider.expiresAt}` : ''}
-                  </div>
-                )}
-
-                {matchedProvider.aiPrecheckWarnings.length > 0 && (
-                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
-                    <div className="font-bold">AI Completeness Pre-Check (Advisory Only — Human Review Decides)</div>
-                    <ul className="mt-1 list-disc pl-4">
-                      {matchedProvider.aiPrecheckWarnings.map((w, i) => (
-                        <li key={i}>{w}</li>
-                      ))}
-                    </ul>
                   </div>
                 )}
 
@@ -519,7 +627,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                       return (
                         <div
                           key={req.docType}
-                          className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] bg-[#F8F7F4] px-3.5 py-2.5 text-xs"
+                          className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] bg-[#F8F7F4] px-3.5 py-2 text-xs"
                         >
                           <div>
                             <div className="font-semibold text-[#111827]">
@@ -586,7 +694,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                     required
                     value={docSummary}
                     onChange={(e) => setDocSummary(e.target.value)}
-                    placeholder="Document details, folio/registration reference, signatory, and parking permissions..."
+                    placeholder="Document details, folio/registration reference, signatory..."
                     className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-xs text-[#111827]"
                   />
                   <button
@@ -604,17 +712,17 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: FACILITIES, AVAILABILITY CALENDAR, OWNER BLOCKS & PRICING */}
+      {/* TAB 2: FACILITIES, EDIT/DELETE, DRIVER ASSIGNMENT & DYNAMIC CALENDAR */}
       {subTab === 'facilities' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
             {/* Facility & Slot Listing Form */}
             <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-5">
               <h2 className="font-display text-lg font-bold text-[#111827]">
-                List New Facility & Bay
+                List New Facility &amp; Bay
               </h2>
               <p className="mt-0.5 text-xs text-[#4B5563]">
-                New listings enter <span className="font-mono font-semibold">pending_approval</span> until Admin completes operational checks and approves publication.
+                New listings enter <span className="font-mono font-semibold">pending_approval</span> until Admin verification.
               </p>
 
               <form
@@ -633,7 +741,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                       zone: loc?.area || loc?.name,
                       lat: loc?.lat,
                       lng: loc?.lng,
-                      entranceLabel: entranceLabel.trim() || 'Main Gate',
+                      entranceLabel: entranceLabel.trim() || 'Main Entrance',
                       walkingDistanceM: Number(walkingDistanceM) || 260,
                       hourlyPriceInr: Number(hourlyPriceInr) || 50,
                       covered,
@@ -658,7 +766,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   required
                   value={facName}
                   onChange={(e) => setFacName(e.target.value)}
-                  placeholder="Facility Name (e.g., Kodigehalli Covered Bay 2)"
+                  placeholder="Facility Name (e.g., Hebbal Covered Bay)"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-sm text-[#111827]"
                 />
                 <select
@@ -685,7 +793,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                     type="text"
                     value={entranceLabel}
                     onChange={(e) => setEntranceLabel(e.target.value)}
-                    placeholder="Spot Entrance"
+                    placeholder="Entrance"
                     className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs text-[#111827]"
                   />
                   <input
@@ -719,7 +827,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   value={restrictionsText}
                   onChange={(e) => setRestrictionsText(e.target.value)}
                   placeholder="Restrictions (comma-separated)"
-                  className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-xs text-[#111827]"
+                  className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs text-[#111827]"
                 />
                 <div className="flex flex-wrap gap-1.5">
                   {VEHICLE_CHOICES.map((vc) => (
@@ -773,32 +881,23 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#047857] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#065F46] disabled:opacity-60"
                 >
                   <Plus className="h-4 w-4" />
-                  <span>{facBusy ? 'Submitting...' : 'Submit Space for Admin Operational Approval'}</span>
+                  <span>{facBusy ? 'Submitting...' : 'Submit Space for Approval'}</span>
                 </button>
               </form>
             </section>
 
-            {/* Availability Calendar, Owner Blocks & Pricing Editor */}
+            {/* Dynamic Calendar & Owner-Use Blocks */}
             <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Calendar className="h-4 w-4 text-[#047857]" />
                   <h2 className="font-display text-lg font-bold text-[#111827]">
-                    Availability Calendar & Owner-Use Blocks
+                    Dynamic Calendar &amp; Slot Blocks
                   </h2>
                 </div>
                 <select
                   value={activeSpace?.id || ''}
-                  onChange={(e) => {
-                    const nextId = e.target.value;
-                    setSelectedSpaceId(nextId);
-                    const sp = spaces.find((s) => s.id === nextId);
-                    if (sp) {
-                      setEditPrice(sp.hourlyPriceInr);
-                      setEditCutoffHour(Math.floor(sp.hardDepartureMin / 60));
-                      setEditRestrictions(sp.restrictions.join(', '));
-                    }
-                  }}
+                  onChange={(e) => setSelectedSpaceId(e.target.value)}
                   className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-1.5 text-xs font-bold text-[#111827]"
                 >
                   {ownSpaces.map((sp) => (
@@ -811,14 +910,13 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
 
               {activeSpace && (
                 <>
-                  {/* Visual Hourly Availability Timeline (06:00 - 23:00) */}
                   <div className="mt-4">
                     <div className="mb-2 flex flex-wrap items-center gap-4 text-[11px] text-[#4B5563]">
                       <span className="font-semibold text-[#047857]">Green: Open</span>
-                      <span className="font-semibold text-[#4338CA]">Indigo: Driver Booking</span>
-                      <span className="font-semibold text-[#C83709]">Amber/Orange: Owner Block</span>
-                      <span className="font-semibold text-rose-700">Red: Withdrawn / Closed</span>
+                      <span className="font-semibold text-[#4338CA]">Indigo: Booked</span>
+                      <span className="font-semibold text-[#C83709]">Amber: Owner Block</span>
                     </div>
+                    {/* Clickable Dynamic Calendar Hours */}
                     <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-9">
                       {HOURS.map((hr) => {
                         const slotStart = hr * 60;
@@ -826,59 +924,45 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                         const isBooked = bookings.some(
                           (b) =>
                             b.spaceId === activeSpace.id &&
-                            (b.status === 'held' ||
-                              b.status === 'confirmed' ||
-                              b.status === 'checked-in' ||
-                              b.status === 'occupied') &&
+                            (b.status === 'held' || b.status === 'confirmed' || b.status === 'checked-in') &&
                             slotStart < b.endMin &&
                             slotEnd > b.startMin
                         );
                         const isOwner = activeSpace.ownerBlocks.some(
                           (ob) => slotStart < ob.endMin && slotEnd > ob.startMin
                         );
-                        const isWithdrawn = activeSpace.withdrawals.some(
-                          (w) => slotStart < w.endMin && slotEnd > w.startMin
-                        );
-                        const isClosed =
-                          slotStart < activeSpace.operatingStartMin ||
-                          slotEnd > activeSpace.hardDepartureMin;
-
-                        const cellStyle = isWithdrawn || isClosed
-                          ? 'border-rose-200 bg-rose-50 text-rose-800'
-                          : isBooked
+                        const cellStyle = isBooked
                           ? 'border-indigo-300 bg-indigo-50 text-[#4338CA]'
                           : isOwner
                           ? 'border-amber-300 bg-[#FFF0EA] text-[#C83709]'
-                          : 'border-emerald-200 bg-emerald-50/70 text-[#047857]';
+                          : 'border-emerald-200 bg-emerald-50 text-[#047857]';
 
                         return (
-                          <div
+                          <button
                             key={hr}
-                            className={`rounded-lg border p-2 text-center font-mono text-[11px] font-bold tabular-nums ${cellStyle}`}
+                            type="button"
+                            onClick={() => {
+                              setBlockStartHour(hr);
+                              setBlockEndHour(hr + 1);
+                            }}
+                            className={`rounded-lg border p-2 text-center font-mono text-[11px] font-bold tabular-nums transition-transform hover:scale-105 ${cellStyle}`}
+                            title="Click to select hours for owner block"
                           >
                             {String(hr).padStart(2, '0')}:00
                             <div className="mt-0.5 text-[10px] font-sans font-medium">
-                              {isWithdrawn
-                                ? 'Withdrawn'
-                                : isClosed
-                                ? 'Closed'
-                                : isBooked
-                                ? 'Booked'
-                                : isOwner
-                                ? 'Owner'
-                                : 'Open'}
+                              {isBooked ? 'Booked' : isOwner ? 'Owner' : 'Open'}
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
                   </div>
 
-                  {/* Owner Block Form (Existing confirmed bookings protected!) */}
+                  {/* Owner Block Form */}
                   <div className="mt-5 grid grid-cols-1 gap-4 border-t border-black/[0.06] pt-4 sm:grid-cols-2">
                     <div className="space-y-2.5">
                       <div className="text-xs font-bold text-[#111827]">
-                        Add Owner-Use Block (Protects Confirmed Bookings)
+                        Add Owner-Use Block ({blockStartHour}:00 - {blockEndHour}:00)
                       </div>
                       <div className="flex gap-2">
                         <input
@@ -899,12 +983,6 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                           className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono text-xs"
                         />
                       </div>
-                      <input
-                        type="text"
-                        value={blockLabel}
-                        onChange={(e) => setBlockLabel(e.target.value)}
-                        className="w-full rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-3 py-1.5 text-xs"
-                      />
                       <button
                         type="button"
                         onClick={() =>
@@ -916,14 +994,13 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                         }
                         className="rounded-lg bg-[#111827] px-3.5 py-2 text-xs font-bold text-white hover:bg-black"
                       >
-                        Block Owner Time
+                        Block Selected Time
                       </button>
                     </div>
 
-                    {/* Pricing & Restrictions Quick Editor */}
                     <div className="space-y-2.5">
                       <div className="text-xs font-bold text-[#111827]">
-                        Pricing & Restrictions ({activeSpace.spaceCode})
+                        Pricing &amp; Rules ({activeSpace.spaceCode})
                       </div>
                       <div className="flex gap-2">
                         <input
@@ -933,38 +1010,20 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                           onChange={(e) => setEditPrice(Number(e.target.value))}
                           className="w-24 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono text-xs"
                         />
-                        <span className="self-center text-xs text-[#4B5563]">₹/hr · Cutoff</span>
-                        <input
-                          type="number"
-                          min={10}
-                          max={23}
-                          value={editCutoffHour}
-                          onChange={(e) => setEditCutoffHour(Number(e.target.value))}
-                          className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono text-xs"
-                        />
+                        <span className="self-center text-xs text-[#4B5563]">₹/hr</span>
                       </div>
-                      <input
-                        type="text"
-                        value={editRestrictions}
-                        onChange={(e) => setEditRestrictions(e.target.value)}
-                        placeholder="Comma-separated restrictions"
-                        className="w-full rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-3 py-1.5 text-xs"
-                      />
                       <button
                         type="button"
                         onClick={() =>
                           void onUpdateSpacePricing(activeSpace.id, {
                             hourlyPriceInr: editPrice,
                             hardDepartureMin: editCutoffHour * 60,
-                            restrictions: editRestrictions
-                              .split(',')
-                              .map((s) => s.trim())
-                              .filter(Boolean),
+                            restrictions: activeSpace.restrictions,
                           })
                         }
                         className="rounded-lg bg-[#047857] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#065F46]"
                       >
-                        Save Pricing & Rules
+                        Save Pricing
                       </button>
                     </div>
                   </div>
@@ -973,49 +1032,121 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
             </section>
           </div>
 
-          {/* Own Facilities Publication Status List */}
+          {/* Facility Management: Edit, Delete & Assign Driver */}
           <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
             <h3 className="font-display text-base font-bold text-[#111827]">
-              Your Listed Facilities & Publication Status
+              Facility Management &amp; Driver Assignment
             </h3>
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
               {ownFacilities.map((f) => {
                 const sp = spaces.find((s) => s.facilityId === f.id);
+                const assignedDriver = (f as any).assignedDriverEmail || '';
+                const isEditing = editingFacilityId === f.id;
+
                 return (
                   <div
                     key={f.id}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-3.5 text-xs"
+                    className="flex flex-col justify-between rounded-xl border border-black/[0.08] bg-[#F8F7F4] p-4 text-xs shadow-xs"
                   >
-                    <div className="min-w-0">
-                      <div className="truncate font-display text-sm font-bold text-[#111827]">
-                        {f.name}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-display text-sm font-bold text-[#111827]">
+                          {f.name}
+                        </span>
+                        <span className="font-mono text-[10px] font-bold text-[#047857] uppercase">
+                          {sp?.publicationStatus || f.verificationStatus}
+                        </span>
                       </div>
                       <div className="text-[#4B5563]">
-                        {f.entranceLabel} · Ops Check: {f.operationalChecksPassed ? 'Passed' : 'Pending'}
+                        {f.address} · Entrance: {f.entranceLabel}
                       </div>
-                      {f.facilityGateQrToken && (
-                        <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-[#4338CA]">
-                          <QrCode className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{f.facilityGateQrToken}</span>
+
+                      {/* Driver Assignment Dropdown */}
+                      <div className="pt-2 border-t border-black/[0.06]">
+                        <label className="mb-1 block text-[11px] font-semibold text-[#374151]">
+                          Assigned Driver User:
+                        </label>
+                        <select
+                          value={assignedDriver}
+                          onChange={(e) => void onAssignFacilityDriver(f.id, e.target.value)}
+                          className="w-full rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs text-[#111827]"
+                        >
+                          <option value="">-- Public Pool (Any Driver) --</option>
+                          <option value={user.email}>{user.email} (You)</option>
+                          <option value="anuak2628@gmail.com">anuak2628@gmail.com</option>
+                        </select>
+                      </div>
+
+                      {isEditing && (
+                        <div className="space-y-2 pt-2 border-t border-black/[0.06]">
+                          <input
+                            type="text"
+                            value={editFacName}
+                            onChange={(e) => setEditFacName(e.target.value)}
+                            placeholder="Facility name"
+                            className="w-full rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={editFacAddress}
+                            onChange={(e) => setEditFacAddress(e.target.value)}
+                            placeholder="Address"
+                            className="w-full rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void onUpdateFacility(f.id, {
+                                  name: editFacName,
+                                  address: editFacAddress,
+                                });
+                                setEditingFacilityId(null);
+                              }}
+                              className="rounded-lg bg-[#047857] px-3 py-1 font-bold text-white"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingFacilityId(null)}
+                              className="rounded-lg border border-black/[0.1] bg-white px-3 py-1 font-semibold"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      {f.facilityGateQrToken && (
-                        <QrCodeDisplay
-                          value={f.facilityGateQrToken}
-                          size={56}
-                          label={`Entrance QR for ${f.name}`}
-                        />
-                      )}
-                      <span
-                        className={`font-mono font-bold uppercase ${
-                          sp?.publicationStatus === 'approved' ? 'text-[#047857]' : 'text-[#C83709]'
-                        }`}
-                      >
-                        {sp?.publicationStatus || f.verificationStatus}
-                      </span>
-                    </div>
+
+                    {!isEditing && (
+                      <div className="mt-4 flex items-center justify-between gap-2 border-t border-black/[0.06] pt-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingFacilityId(f.id);
+                            setEditFacName(f.name);
+                            setEditFacAddress(f.address);
+                            setEditEntranceLabel(f.entranceLabel);
+                          }}
+                          className="rounded-lg border border-black/[0.1] bg-white px-3 py-1.5 font-semibold text-[#111827] hover:bg-black/[0.05]"
+                        >
+                          Edit Facility
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Delete facility ${f.name}?`)) {
+                              void onDeleteFacility(f.id);
+                            }
+                          }}
+                          className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 font-semibold text-rose-700 hover:bg-rose-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1024,19 +1155,18 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
         </div>
       )}
 
-      {/* TAB 3: SINGLE HOST SCANNER, LIVE BAY OCCUPANCY, EXTENSION APPROVALS & BOOKINGS */}
+      {/* TAB 3: BOOKINGS, SEARCH & FILTER, CANCELLATION & HOST SCANNER */}
       {subTab === 'bookings' && (
         <div className="space-y-6">
-          {/* Top Row: Single Host Spot Entry Scanner Terminal + Live Bay Occupancy & Clearance Board */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {/* Single Host Scanner Terminal (Entry Point) */}
+            {/* Host Scanner Terminal */}
             <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-5">
               <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
                 <ScanLine className="h-5 w-5 text-[#047857]" />
                 <h2>Single Host Entry Scanner</h2>
               </div>
               <p className="mt-0.5 text-xs text-[#4B5563]">
-                Your single kiosk/guard scanner reads each arriving driver&apos;s Booking QR pass or Spot Access PIN, verifies their plate, sets booking to <span className="font-mono font-semibold">checked-in</span>, and marks the bay <span className="font-mono font-semibold">OCCUPIED</span>.
+                Scan arriving driver QR pass or Spot Access PIN to verify and check-in.
               </p>
 
               <form
@@ -1046,11 +1176,9 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   setScannerBusy(true);
                   setScannerFeedback(null);
                   try {
-                    const res = await onHostScanDriverQr({
-                      scannedInput: scannerInput,
-                    });
+                    const res = await onHostScanDriverQr({ scannedInput: scannerInput });
                     if (res.ok) {
-                      setScannerFeedback('Verified entry! Booking checked in and bay marked OCCUPIED.');
+                      setScannerFeedback('Verified! Booking checked in and bay marked OCCUPIED.');
                       setScannerInput('');
                     } else {
                       setScannerFeedback(res.error || 'Verification failed.');
@@ -1065,7 +1193,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   type="text"
                   value={scannerInput}
                   onChange={(e) => setScannerInput(e.target.value)}
-                  placeholder="Paste driver QR JSON/token, Spot Access PIN (PKP-...), or Booking ID"
+                  placeholder="Paste QR token, Spot Access PIN (PKP-...), or Booking ID"
                   className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 font-mono text-xs text-[#111827]"
                 />
                 <button
@@ -1074,7 +1202,7 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#047857] px-4 py-2 text-xs font-bold text-white hover:bg-[#065F46] disabled:opacity-50"
                 >
                   <QrCode className="h-4 w-4" />
-                  <span>{scannerBusy ? 'Verifying Driver Pass...' : 'Verify Driver QR & Confirm Spot Entry'}</span>
+                  <span>{scannerBusy ? 'Verifying...' : 'Verify Driver QR &amp; Check In'}</span>
                 </button>
               </form>
 
@@ -1083,348 +1211,121 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                   {scannerFeedback}
                 </div>
               )}
+            </section>
 
-              {/* Quick-Scan Arriving Confirmed Bookings */}
-              {(() => {
-                const arriving = ownBookings.filter((b) => b.status === 'confirmed');
-                if (arriving.length === 0) return null;
-                return (
-                  <div className="mt-4 border-t border-black/[0.06] pt-3">
-                    <div className="text-[11px] font-bold uppercase tracking-wide text-[#4B5563]">
-                      Arriving Confirmed Passes ({arriving.length})
-                    </div>
-                    <div className="mt-2 space-y-2">
-                      {arriving.slice(0, 3).map((ab) => (
-                        <div
-                          key={ab.id}
-                          className="flex items-center justify-between gap-2 rounded-lg border border-black/[0.06] bg-[#F8F7F4] px-3 py-2 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate font-bold text-[#111827]">
-                              {ab.driverName} · {ab.vehiclePlate || ab.vehicleLabel}
-                            </div>
-                            <div className="font-mono text-[11px] text-[#4B5563]">
-                              {ab.spaceCode} · PIN {ab.accessCode}
-                            </div>
-                          </div>
+            {/* Bookings Search & Filter + List with Cancellation */}
+            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="font-display text-lg font-bold text-[#111827]">
+                  Facility Bookings ({filteredOwnBookings.length})
+                </h2>
+                <button
+                  type="button"
+                  onClick={exportBookingsCsv}
+                  className="flex items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F8F7F4] px-3 py-1.5 text-xs font-semibold text-[#111827] hover:bg-black/[0.04]"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Export Bookings CSV</span>
+                </button>
+              </div>
+
+              {/* Search & Filter Bar */}
+              <div className="mt-4 flex flex-wrap items-center gap-2.5">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#9CA3AF]" />
+                  <input
+                    type="text"
+                    value={bookingSearch}
+                    onChange={(e) => setBookingSearch(e.target.value)}
+                    placeholder="Search by driver name, vehicle, or space..."
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2 pl-9 pr-3 text-xs text-[#111827]"
+                  />
+                </div>
+                <select
+                  value={bookingStatusFilter}
+                  onChange={(e) => setBookingStatusFilter(e.target.value as any)}
+                  className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs font-semibold text-[#111827]"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="confirmed">Confirmed</option>
+                  <option value="checked-in">Checked-In</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </div>
+
+              <div className="mt-4 max-h-96 space-y-3 overflow-y-auto">
+                {filteredOwnBookings.length === 0 ? (
+                  <div className="rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-4 text-xs text-[#4B5563]">
+                    No bookings matching criteria.
+                  </div>
+                ) : (
+                  filteredOwnBookings.map((bk) => (
+                    <div
+                      key={bk.id}
+                      className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-3.5 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono font-bold text-[#111827]">
+                          {bk.id} · {bk.spaceCode}
+                        </span>
+                        <span className="font-semibold capitalize text-[#047857]">
+                          {bk.status} · ₹{bk.totalAmountInr}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[#374151]">
+                        Driver: <strong>{bk.driverName}</strong> ({bk.vehicleLabel}) ·{' '}
+                        <span className="font-mono">
+                          {fmt(bk.startMin)}–{fmt(bk.endMin)}
+                        </span>
+                      </div>
+
+                      {bk.status !== 'cancelled' && bk.status !== 'completed' && (
+                        <div className="mt-2.5 flex items-center justify-end gap-2">
                           <button
                             type="button"
-                            disabled={scannerBusy}
-                            onClick={async () => {
-                              setScannerBusy(true);
-                              try {
-                                await onHostScanDriverQr({
-                                  scannedInput: ab.qrPassToken || ab.accessCode,
-                                  expectedFacilityId: ab.facilityId,
-                                });
-                              } finally {
-                                setScannerBusy(false);
+                            onClick={() => {
+                              const reason = window.prompt('Reason for cancelling booking:', 'Host schedule adjustment');
+                              if (reason) {
+                                void onCancelBookingHost(bk.id, reason);
                               }
                             }}
-                            className="whitespace-nowrap shrink-0 rounded-lg bg-[#111827] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-black"
+                            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1 font-bold text-rose-700 hover:bg-rose-100"
                           >
-                            Scan Driver QR
+                            Cancel &amp; Refund Driver
                           </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </section>
-
-            {/* Live Bay Occupancy, Overstay Detection & Turnaround Buffer Board */}
-            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                  <Bot className="h-5 w-5 text-[#4338CA]" />
-                  <h2>Live Bay Occupancy &amp; Clearance Board</h2>
-                </div>
-                <span className="text-xs text-[#4B5563]">
-                  Spaces never reopen on timer alone — requires confirmed exit + 15m buffer
-                </span>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {ownSpaces.map((sp) => {
-                  const occ = sp.occupancyState || 'AVAILABLE';
-                  const activeBk = ownBookings.find(
-                    (b) =>
-                      b.id === sp.activeOccupancyBookingId ||
-                      (b.spaceId === sp.id &&
-                        (b.status === 'checked-in' || b.status === 'occupied'))
-                  );
-                  const stateTone =
-                    occ === 'OVERSTAY'
-                      ? 'border-rose-300 bg-rose-50/70'
-                      : occ === 'DEPARTURE_PENDING'
-                      ? 'border-amber-300 bg-amber-50/70'
-                      : occ === 'CLEARANCE'
-                      ? 'border-indigo-300 bg-indigo-50/70'
-                      : occ === 'OCCUPIED'
-                      ? 'border-emerald-300 bg-emerald-50/60'
-                      : 'border-black/[0.08] bg-[#F8F7F4]';
-
-                  return (
-                    <div key={sp.id} className={`rounded-xl border p-3.5 text-xs ${stateTone}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono font-bold text-[#111827]">{sp.spaceCode}</span>
-                        <span className="font-mono text-[11px] font-bold text-[#4338CA]">{occ}</span>
-                      </div>
-                      <div className="mt-1 text-[11px] text-[#374151]">
-                        {sp.lastOccupancyEvent || 'Ready for bookings'}
-                      </div>
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
-                        {activeBk &&
-                          (occ === 'OCCUPIED' || occ === 'OVERSTAY' || occ === 'DEPARTURE_PENDING') && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void onRunLifecycleCheck(activeBk.id, 30)}
-                                className="rounded-lg border border-indigo-300 bg-white px-2.5 py-1 text-[11px] font-bold text-[#4338CA] hover:bg-indigo-50"
-                              >
-                                Run 7-Step Overstay Agent
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void onConfirmDeparture(activeBk.id)}
-                                className="rounded-lg bg-[#047857] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#065F46]"
-                              >
-                                Confirm Vacancy &rarr; 15m Buffer
-                              </button>
-                            </>
-                          )}
-                        {occ === 'CLEARANCE' && (
-                          <button
-                            type="button"
-                            onClick={() => void onCompleteClearance(sp.id)}
-                            className="rounded-lg bg-[#111827] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
-                          >
-                            Complete Buffer &rarr; Reopen Bay
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {lifecycleEvents.length > 0 && (
-                <div className="mt-4 border-t border-black/[0.06] pt-3 text-xs">
-                  <div className="font-bold text-[#111827]">
-                    Latest Autonomous Agent Decision:
-                  </div>
-                  <div className="mt-1 text-[#374151]">
-                    <span className="font-mono font-bold text-[#4338CA]">
-                      {lifecycleEvents[0].spaceCode} ({lifecycleEvents[0].resultingOccupancyState}):
-                    </span>{' '}
-                    {lifecycleEvents[0].outcomeSummary}
-                  </div>
-                </div>
-              )}
-            </section>
-          </div>
-
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {/* Extension Approval Queue + Future Slot Withdrawal */}
-            <section className="space-y-6 lg:col-span-5">
-              <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
-                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                  <Clock className="h-4 w-4 text-[#C83709]" />
-                  <span>Extension Approval Queue ({pendingExtensions.length})</span>
-                </div>
-                <p className="mt-0.5 text-xs text-[#4B5563]">
-                  Approve or decline extension requests safely without displacing next bookings.
-                </p>
-
-                <div className="mt-4 space-y-3">
-                  {pendingExtensions.length === 0 ? (
-                    <div className="rounded-xl border border-black/[0.06] bg-[#F8F7F4] p-4 text-xs text-[#4B5563]">
-                      No pending extension requests right now.
-                    </div>
-                  ) : (
-                    pendingExtensions.map(({ bk, req }) => (
-                      <div
-                        key={req.id}
-                        className="rounded-xl border border-amber-200 bg-[#FFF8F4] p-3.5 text-xs"
-                      >
-                        <div className="font-bold text-[#111827]">
-                          {bk.id} · {bk.spaceCode} ({bk.driverName})
-                        </div>
-                        <div className="mt-1 text-[#374151]">
-                          Extend <span className="font-mono">{fmt(bk.endMin)}</span> →{' '}
-                          <span className="font-mono font-bold text-[#047857]">
-                            {fmt(req.requestedEndMin)}
-                          </span>{' '}
-                          (+₹{req.additionalTotalInr})
-                        </div>
-                        <div className="mt-1 text-[11px] text-[#4B5563]">{req.reason}</div>
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void onDecideExtension(bk.id, req.id, 'approve')}
-                            className="flex items-center gap-1 rounded-lg bg-[#047857] px-3 py-1.5 font-bold text-white"
-                          >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            <span>Approve</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void onDecideExtension(bk.id, req.id, 'reject')}
-                            className="flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-3 py-1.5 font-bold text-rose-700"
-                          >
-                            <XCircle className="h-3.5 w-3.5" />
-                            <span>Decline</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md">
-                <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                  <ShieldAlert className="h-4 w-4 text-rose-600" />
-                  <span>Withdraw Future Availability</span>
-                </div>
-                <p className="mt-0.5 text-xs text-[#4B5563]">
-                  Blocks future bookings and notifies any affected drivers with free rebooking or 100% refund options.
-                </p>
-
-                {activeSpace && (
-                  <div className="mt-4 space-y-3">
-                    <select
-                      value={activeSpace.id}
-                      onChange={(e) => setSelectedSpaceId(e.target.value)}
-                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs font-bold text-[#111827]"
-                    >
-                      {ownSpaces.map((sp) => (
-                        <option key={sp.id} value={sp.id}>
-                          {sp.spaceCode}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="flex items-center gap-2 text-xs">
-                      <input
-                        type="number"
-                        min={6}
-                        max={22}
-                        value={blockStartHour}
-                        onChange={(e) => setBlockStartHour(Number(e.target.value))}
-                        className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
-                      />
-                      <span>to</span>
-                      <input
-                        type="number"
-                        min={7}
-                        max={23}
-                        value={blockEndHour}
-                        onChange={(e) => setBlockEndHour(Number(e.target.value))}
-                        className="w-20 rounded-lg border border-black/[0.1] bg-[#F8F7F4] px-2.5 py-1.5 font-mono"
-                      />
-                    </div>
-                    <input
-                      type="text"
-                      value={withdrawReason}
-                      onChange={(e) => setWithdrawReason(e.target.value)}
-                      placeholder="Reason for withdrawal"
-                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void onWithdrawAvailability(activeSpace.id, {
-                          startMin: blockStartHour * 60,
-                          endMin: blockEndHour * 60,
-                          reason: withdrawReason,
-                        })
-                      }
-                      className="w-full rounded-xl bg-rose-700 px-4 py-2 text-xs font-bold text-white hover:bg-rose-800"
-                    >
-                      Withdraw Slot & Notify Drivers
-                    </button>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Provider Bookings List */}
-            <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
-              <h2 className="font-display text-lg font-bold text-[#111827]">
-                Facility Bookings ({ownBookings.length})
-              </h2>
-              <div className="mt-4 space-y-3">
-                {ownBookings.map((bk) => (
-                  <div
-                    key={bk.id}
-                    className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4 text-xs"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-mono font-bold text-[#111827]">
-                        {bk.id} · {bk.spaceCode}
-                      </span>
-                      <span className="font-semibold capitalize text-[#047857]">
-                        {bk.status} · {bk.paymentStatus}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-[#374151]">
-                      Driver: <strong>{bk.driverName}</strong> · {bk.vehicleLabel} ·{' '}
-                      <span className="font-mono">
-                        {fmt(bk.startMin)}–{fmt(bk.endMin)}
-                      </span>
-                    </div>
-                    {bk.hostExceptionFlagged && (
-                      <div className="mt-1.5 font-semibold text-indigo-800">
-                        Protected Exception: Overlaps new owner block (awaiting review).
-                      </div>
-                    )}
-                    {bk.overstayStatus === 'flagged_overstay' && (
-                      <div className="mt-1.5 font-semibold text-rose-700">
-                        Overstay Flagged (+{bk.overstayMinutes}m · Surcharge ₹{bk.overstayPenaltyInr}) — downstream bookings protected.
-                      </div>
-                    )}
-                    {(bk.status === 'checked-in' ||
-                      bk.status === 'occupied' ||
-                      bk.status === 'confirmed') && (
-                        <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void onRunLifecycleCheck(bk.id, 30)}
-                            className="rounded-lg border border-indigo-300 bg-white px-3 py-1.5 font-bold text-[#4338CA] hover:bg-indigo-50"
-                          >
-                            Run 7-Step Lifecycle Agent
-                          </button>
-                          {bk.overstayStatus !== 'flagged_overstay' && (
-                            <button
-                              type="button"
-                              onClick={() => void onReportOverstay(bk.id, 45)}
-                              className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-bold text-rose-700 hover:bg-rose-50"
-                            >
-                              Flag Overstay (+45m) &amp; Protect Next Rider
-                            </button>
-                          )}
                         </div>
                       )}
-                  </div>
-                ))}
+                    </div>
+                  ))
+                )}
               </div>
             </section>
           </div>
         </div>
       )}
 
-      {/* TAB 4: EARNINGS, SETTLEMENTS & INCIDENT REPORTING */}
+      {/* TAB 4: SETTLEMENTS, CSV EXPORT & SETTLEMENT PDF DOWNLOAD */}
       {subTab === 'settlements' && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-7">
-            <div className="flex items-center justify-between">
+          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-8">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
-                <IndianRupee className="h-4 w-4 text-[#047857]" />
-                <span>Earnings & Settlement History</span>
+                <IndianRupee className="h-5 w-5 text-[#047857]" />
+                <span>Earnings &amp; Settlement Documents</span>
               </div>
-              <div className="font-mono text-lg font-extrabold tabular-nums text-[#047857]">
-                Net ₹{totalNetEarnings}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={exportSettlementsCsv}
+                  className="flex items-center gap-1.5 rounded-xl border border-black/[0.08] bg-[#F8F7F4] px-3 py-1.5 text-xs font-semibold text-[#111827] hover:bg-black/[0.04]"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Export CSV</span>
+                </button>
+                <div className="font-mono text-lg font-extrabold tabular-nums text-[#047857]">
+                  Net ₹{totalNetEarnings}
+                </div>
               </div>
             </div>
 
@@ -1435,26 +1336,32 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
                     <th className="py-2 pr-3">Settlement</th>
                     <th className="py-2 pr-3">Booking</th>
                     <th className="py-2 pr-3 text-right">Gross</th>
-                    <th className="py-2 pr-3 text-right">Fee</th>
                     <th className="py-2 pr-3 text-right">Net Payout</th>
-                    <th className="py-2">Status</th>
+                    <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 text-right">Invoice</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-black/[0.06]">
                   {ownSettlements.map((st) => (
                     <tr key={st.id}>
-                      <td className="py-2.5 pr-3 font-mono font-bold text-[#111827]">{st.id}</td>
-                      <td className="py-2.5 pr-3 font-mono text-[#374151]">{st.bookingId}</td>
-                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums">₹{st.grossInr}</td>
-                      <td className="py-2.5 pr-3 text-right font-mono tabular-nums text-[#4B5563]">
-                        -₹{st.platformCommissionInr}
-                      </td>
-                      <td className="py-2.5 pr-3 text-right font-mono font-bold tabular-nums text-[#047857]">
+                      <td className="py-3 pr-3 font-mono font-bold text-[#111827]">{st.id}</td>
+                      <td className="py-3 pr-3 font-mono text-[#374151]">{st.bookingId}</td>
+                      <td className="py-3 pr-3 text-right font-mono tabular-nums">₹{st.grossInr}</td>
+                      <td className="py-3 pr-3 text-right font-mono font-bold tabular-nums text-[#047857]">
                         ₹{st.netPayoutInr}
                       </td>
-                      <td className="py-2.5 capitalize">
+                      <td className="py-3 pr-3 capitalize">
                         {st.status.replace('_', ' ')}
-                        {st.utrRef ? ` (${st.utrRef})` : ''}
+                      </td>
+                      <td className="py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => downloadSettlementInvoice(st)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-black/[0.1] bg-white px-2.5 py-1 font-semibold text-[#111827] hover:bg-black/[0.04]"
+                        >
+                          <FileText className="h-3.5 w-3.5 text-[#047857]" />
+                          <span>Download</span>
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -1463,13 +1370,13 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
             </div>
           </section>
 
-          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-5">
+          <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-6 shadow-sm backdrop-blur-md lg:col-span-4">
             <div className="flex items-center gap-2 font-display text-lg font-bold text-[#111827]">
               <AlertTriangle className="h-4 w-4 text-[#C83709]" />
-              <span>Provider Incident Report</span>
+              <span>Incident Report</span>
             </div>
             <p className="mt-0.5 text-xs text-[#4B5563]">
-              Never forcibly clamp or tow without lawful authority; report overstays or gate incidents here.
+              Report overstays or facility obstacles.
             </p>
 
             <form
@@ -1486,51 +1393,31 @@ export const ProviderPortalView: React.FC<ProviderPortalViewProps> = ({
               }}
               className="mt-4 space-y-3"
             >
-              <div className="grid grid-cols-2 gap-2.5">
-                <select
-                  value={incCategory}
-                  onChange={(e) => setIncCategory(e.target.value as IncidentRecord['category'])}
-                  className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
-                >
-                  <option value="vehicle_overstay">Vehicle Overstay</option>
-                  <option value="access_blocked">Spot Access Blocked</option>
-                  <option value="safety_hazard">Safety / Hazard</option>
-                  <option value="other">Other</option>
-                </select>
-                <select
-                  value={incSeverity}
-                  onChange={(e) => setIncSeverity(e.target.value as IncidentRecord['severity'])}
-                  className="rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-              </div>
+              <select
+                value={incCategory}
+                onChange={(e) => setIncCategory(e.target.value as IncidentRecord['category'])}
+                className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs"
+              >
+                <option value="vehicle_overstay">Vehicle Overstay</option>
+                <option value="access_blocked">Spot Access Blocked</option>
+                <option value="safety_hazard">Safety Hazard</option>
+                <option value="other">Other</option>
+              </select>
               <textarea
                 rows={3}
                 required
                 value={incDesc}
                 onChange={(e) => setIncDesc(e.target.value)}
-                placeholder="Describe vehicle plate, overstay minutes, or gate obstruction..."
+                placeholder="Describe issue..."
                 className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2 text-xs"
               />
               <button
                 type="submit"
-                className="w-full rounded-xl bg-[#111827] px-4 py-2 text-xs font-bold text-white"
+                className="w-full rounded-xl bg-[#111827] px-4 py-2 text-xs font-bold text-white hover:bg-black"
               >
-                Submit Incident to Ops
+                Submit Incident
               </button>
             </form>
-
-            <div className="mt-4 space-y-2 border-t border-black/[0.06] pt-3">
-              {incidents.slice(0, 3).map((inc) => (
-                <div key={inc.id} className="text-xs text-[#374151]">
-                  <strong className="font-mono text-[#111827]">{inc.id}</strong> ({inc.status}):{' '}
-                  {inc.description}
-                </div>
-              ))}
-            </div>
           </section>
         </div>
       )}
