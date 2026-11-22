@@ -125,15 +125,7 @@ export const DriverProfileView: React.FC<DriverProfileViewProps> = ({
               Register your driving license and vehicle details for faster gate check-in.
             </p>
           </div>
-          {existingProfile && (
-            <button
-              type="button"
-              onClick={onFindParking}
-              className="whitespace-nowrap shrink-0 rounded-xl bg-gradient-to-r from-[#E0430D] to-[#C83709] px-4 py-2 text-xs font-bold text-white shadow-sm transition-all hover:brightness-110"
-            >
-              Find Parking Now
-            </button>
-          )}
+
         </div>
       </section>
 

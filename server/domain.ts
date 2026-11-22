@@ -5157,6 +5157,11 @@ class ParkPoolStore {
       space.lastOccupancyEvent = `Vacancy confirmed by ${input.confirmedBy}; ${bufferMins}m turnaround clearance buffer started`;
     }
 
+    // Automatically complete clearance and reopen space in the background without needing a manual UI action
+    if (space) {
+      this.completeClearanceBufferAndReopen(space.id, `Autonomous Buffer Agent (${input.actorName})`);
+    }
+
     const ev: AutonomousLifecycleEvent = {
       id: `LCE-${Date.now().toString(36).toUpperCase().slice(-5)}`,
       bookingId: bk.id,
@@ -5165,15 +5170,15 @@ class ParkPoolStore {
       facilityName: bk.facilityName,
       trigger: 'departure_confirmed',
       createdAt: nowIso,
-      outcomeSummary: `Checkout & physical departure confirmed. Space entered ${bufferMins}m CLEARANCE buffer before reopening.`,
-      resultingOccupancyState: 'CLEARANCE',
+      outcomeSummary: `Checkout & physical departure confirmed. Turnaround buffer and bay reopening completed automatically.`,
+      resultingOccupancyState: space?.occupancyState || 'AVAILABLE',
       executionMode: 'deterministic_service',
       steps: [
         {
           stepNumber: 6,
           agentName: 'Clearance Buffer Manager Agent',
-          action: `Started ${bufferMins}-Min Turnaround Buffer`,
-          detail: `Physical vacancy confirmed by ${input.confirmedBy}. Space stays locked in CLEARANCE until ${clearanceEndsAt.slice(11, 16)}Z.`,
+          action: `Automated Turnaround & Reopening`,
+          detail: `Physical vacancy confirmed by ${input.confirmedBy}. Clearance buffer completed and space reopened automatically.`,
           status: 'done',
         },
       ],
@@ -5181,8 +5186,8 @@ class ParkPoolStore {
     this.lifecycleEvents.unshift(ev);
     this.addAudit(
       input.actorName,
-      'DEPARTURE_CONFIRMED_CLEARANCE_STARTED',
-      `${bk.id} completed; ${bk.spaceCode} in CLEARANCE (${bufferMins}m buffer).`
+      'DEPARTURE_CONFIRMED_AND_REOPENED',
+      `${bk.id} completed; ${bk.spaceCode} automatically cleared and reopened.`
     );
     return { ok: true, booking: bk, wallet: walletResult, lifecycleEvent: ev };
   }
