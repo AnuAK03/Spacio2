@@ -37,7 +37,7 @@ export const QrCodeDisplay: React.FC<QrCodeDisplayProps> = ({ value, size = 176,
     return (
       <div
         style={{ width: size, height: size }}
-        className="flex flex-col items-center justify-center rounded-xl border border-black/[0.1] bg-[#F8F7F4] p-3 text-center"
+        className="flex select-none flex-col items-center justify-center rounded-xl border border-black/[0.1] bg-[#F8F7F4] p-3 text-center"
       >
         <QrCode className="h-8 w-8 text-[#4338CA]" />
         <span className="mt-2 font-mono text-[11px] font-semibold text-[#374151]">{label}</span>
@@ -46,13 +46,22 @@ export const QrCodeDisplay: React.FC<QrCodeDisplayProps> = ({ value, size = 176,
   }
 
   return (
-    <img
-      src={dataUrl}
-      alt={label}
-      width={size}
-      height={size}
-      referrerPolicy="no-referrer"
-      className="rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-sm"
-    />
+    <div
+      onContextMenu={(e) => e.preventDefault()}
+      onDragStart={(e) => e.preventDefault()}
+      className="inline-block select-none"
+      title="Entry QR pass (view-only — image download disabled)"
+    >
+      <img
+        src={dataUrl}
+        alt={label}
+        width={size}
+        height={size}
+        draggable={false}
+        onContextMenu={(e) => e.preventDefault()}
+        referrerPolicy="no-referrer"
+        className="pointer-events-none select-none rounded-xl border border-black/[0.08] bg-white p-1.5 shadow-sm"
+      />
+    </div>
   );
 };

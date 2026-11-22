@@ -3248,6 +3248,10 @@ class ParkPoolStore {
       walkingMinutes: facility.walkingMinutes,
       entranceLabel: facility.entranceLabel,
       hourlyPriceInr: space.hourlyPriceInr,
+      durationHours: quote.durationHours,
+      baseAmountInr: quote.baseAmountInr,
+      platformFeeInr: quote.platformFeeInr,
+      gstInr: quote.gstInr,
       totalQuoteInr: quote.totalAmountInr,
       score,
       scoreBreakdown: {
@@ -3956,7 +3960,24 @@ class ParkPoolStore {
         actorName: bk.driverName,
       });
       if (!depRes.ok) return { ok: false, error: depRes.error };
-      return { ok: true, booking: depRes.booking };
+      return {
+        ok: true,
+        booking: depRes.booking,
+        wallet: depRes.wallet,
+        extraHoursDeductedInr: depRes.extraHoursDeductedInr,
+        extraMinutesCharged: depRes.extraMinutesCharged,
+        remainingBalanceInr: depRes.remainingBalanceInr,
+        unpaidDueInr: depRes.unpaidDueInr,
+      } as {
+        ok: boolean;
+        booking?: BookingRecord;
+        wallet?: PrepaidWallet;
+        extraHoursDeductedInr?: number;
+        extraMinutesCharged?: number;
+        remainingBalanceInr?: number;
+        unpaidDueInr?: number;
+        error?: string;
+      };
     }
 
     if (action === 'cancel') {
@@ -4801,7 +4822,14 @@ class ParkPoolStore {
     bookingId: string,
     email: string,
     name: string
-  ): { ok: boolean; booking?: BookingRecord; wallet?: PrepaidWallet; error?: string } {
+  ): {
+    ok: boolean;
+    booking?: BookingRecord;
+    wallet?: PrepaidWallet;
+    deductedInr?: number;
+    remainingBalanceInr?: number;
+    error?: string;
+  } {
     this.expireStaleHolds();
     const bk = this.bookings.find((b) => b.id === bookingId);
     if (!bk) return { ok: false, error: 'Booking not found' };
@@ -4834,7 +4862,7 @@ class ParkPoolStore {
     bk.walletSettledInr = (bk.walletSettledInr || 0) + orderRes.order.amountInr;
     bk.invoiceNumber = bk.invoiceNumber || `INV-PKP-${bk.id.slice(-4)}`;
     bk.auditTrail.push(
-      `${nowIso.slice(11, 19)}Z Paid ₹${orderRes.order.amountInr} via Prepaid Parking Balance -> Confirmed & Entry QR Pass Issued`
+      `${nowIso.slice(11, 19)}Z Paid ₹${orderRes.order.amountInr} via Prepaid Parking Balance (Remaining: ₹${debit.wallet.balanceInr}) -> Confirmed & Entry QR Pass Issued`
     );
 
     const bay = this.spaces.find((s) => s.id === bk.spaceId);
@@ -4876,7 +4904,13 @@ class ParkPoolStore {
       'PREPAID_WALLET_BOOKING_PAID',
       `${bk.id} confirmed for ₹${orderRes.order.amountInr} from prepaid wallet (remaining ₹${debit.wallet.balanceInr}).`
     );
-    return { ok: true, booking: bk, wallet: debit.wallet };
+    return {
+      ok: true,
+      booking: bk,
+      wallet: debit.wallet,
+      deductedInr: orderRes.order.amountInr,
+      remainingBalanceInr: debit.wallet.balanceInr,
+    };
   }
 
   public verifyDriverQrAtHostScanner(input: {
@@ -5087,6 +5121,10 @@ class ParkPoolStore {
     ok: boolean;
     booking?: BookingRecord;
     wallet?: PrepaidWallet;
+    extraHoursDeductedInr?: number;
+    extraMinutesCharged?: number;
+    remainingBalanceInr?: number;
+    unpaidDueInr?: number;
     lifecycleEvent?: AutonomousLifecycleEvent;
     error?: string;
   } {
@@ -5101,26 +5139,67 @@ class ParkPoolStore {
     const ts = nowIso.slice(11, 19) + 'Z';
 
     let walletResult: PrepaidWallet | undefined;
-    // Automatically settle any flagged overstay fee that has not yet been settled via prepaid wallet
+    let extraHoursDeductedInr = 0;
+    let extraMinutesCharged = 0;
+
+    // 1) Settle any previously flagged overstay surcharge, or
+    // 2) Automatically compute & settle real elapsed extra hours beyond booked duration since check-in.
     if (bk.overstayStatus === 'flagged_overstay' && (bk.overstayPenaltyInr || 0) > 0) {
       const fee = bk.overstayPenaltyInr || 0;
+      const extraMins = bk.overstayMinutes || 30;
       const settlement = this.settleChargeFromWallet({
         email: bk.driverEmail || 'driver@bengaluru.in',
         name: bk.driverName,
         amountInr: fee,
-        description: `Verified overstay settlement on ${bk.spaceCode} (+${bk.overstayMinutes || 30}m)`,
+        description: `Extra hours / overstay settlement on ${bk.spaceCode} (+${extraMins}m)`,
         type: 'overstay_settlement',
         bookingId: bk.id,
         allowShortfall: true,
       });
       walletResult = settlement.wallet;
+      extraHoursDeductedInr = settlement.paidFromWalletInr;
+      extraMinutesCharged = extraMins;
       bk.walletSettledInr = (bk.walletSettledInr || 0) + settlement.paidFromWalletInr;
       bk.auditTrail.push(
-        `${ts} Prepaid Wallet Overstay Settlement: ₹${settlement.paidFromWalletInr} deducted${settlement.shortfallInr > 0 ? ` (₹${settlement.shortfallInr} unpaid due recorded — bookings restricted)` : ''}`
+        `${ts} Prepaid Wallet Overstay Settlement: ₹${settlement.paidFromWalletInr} deducted (Remaining balance: ₹${settlement.wallet.balanceInr})${settlement.shortfallInr > 0 ? ` (₹${settlement.shortfallInr} unpaid due recorded — bookings restricted)` : ''}`
       );
-    } else if (bk.driverEmail) {
-      walletResult = this.getOrCreateWallet(bk.driverEmail, bk.driverName);
+    } else if (bk.checkedInAt) {
+      const actualStayedMins = Math.floor((Date.now() - Date.parse(bk.checkedInAt)) / 60000);
+      const bookedDurationMins = Math.max(30, bk.endMin - bk.startMin);
+      if (Number.isFinite(actualStayedMins) && actualStayedMins > bookedDurationMins + 5) {
+        const extraMins = actualStayedMins - bookedDurationMins;
+        const hourly = space?.hourlyPriceInr || 60;
+        const extraCharge = Math.max(20, Math.round((extraMins / 60) * hourly * 1.25));
+        const settlement = this.settleChargeFromWallet({
+          email: bk.driverEmail || 'driver@bengaluru.in',
+          name: bk.driverName,
+          amountInr: extraCharge,
+          description: `Extra parking time on ${bk.spaceCode} (+${extraMins}m)`,
+          type: 'overstay_settlement',
+          bookingId: bk.id,
+          allowShortfall: true,
+        });
+        walletResult = settlement.wallet;
+        extraHoursDeductedInr = settlement.paidFromWalletInr;
+        extraMinutesCharged = extraMins;
+        bk.overstayMinutes = extraMins;
+        bk.overstayPenaltyInr = extraCharge;
+        bk.overstayStatus = 'resolved';
+        bk.walletSettledInr = (bk.walletSettledInr || 0) + settlement.paidFromWalletInr;
+        bk.auditTrail.push(
+          `${ts} Checkout Extra Hours Settlement (+${extraMins}m): ₹${settlement.paidFromWalletInr} deducted (Remaining balance: ₹${settlement.wallet.balanceInr})`
+        );
+      }
     }
+
+    if (!walletResult) {
+      walletResult = this.getOrCreateWallet(bk.driverEmail || 'driver@bengaluru.in', bk.driverName);
+    }
+
+    bk.extraHoursChargedInr = extraHoursDeductedInr;
+    bk.extraMinutesCharged = extraMinutesCharged;
+    bk.remainingBalanceAfterCheckoutInr = walletResult.balanceInr;
+    bk.unpaidDueAfterCheckoutInr = walletResult.unpaidDueInr;
 
     bk.status = 'completed';
     bk.checkedOutAt = nowIso;
@@ -5140,7 +5219,9 @@ class ParkPoolStore {
         confirmedByHost: input.confirmedBy === 'host',
       };
     }
-    bk.auditTrail.push(`${ts} Departure Confirmed (${input.confirmedBy}) -> Clearance Buffer Active`);
+    bk.auditTrail.push(
+      `${ts} Departure Confirmed (${input.confirmedBy}) · Remaining Wallet Balance: ₹${walletResult.balanceInr}`
+    );
 
     const stl = this.settlements.find((s) => s.bookingId === bk.id);
     if (stl && stl.status === 'pending_checkout') {
@@ -5187,9 +5268,18 @@ class ParkPoolStore {
     this.addAudit(
       input.actorName,
       'DEPARTURE_CONFIRMED_AND_REOPENED',
-      `${bk.id} completed; ${bk.spaceCode} automatically cleared and reopened.`
+      `${bk.id} completed; ${bk.spaceCode} automatically cleared and reopened (wallet remaining: ₹${walletResult.balanceInr}).`
     );
-    return { ok: true, booking: bk, wallet: walletResult, lifecycleEvent: ev };
+    return {
+      ok: true,
+      booking: bk,
+      wallet: walletResult,
+      extraHoursDeductedInr,
+      extraMinutesCharged,
+      remainingBalanceInr: walletResult.balanceInr,
+      unpaidDueInr: walletResult.unpaidDueInr,
+      lifecycleEvent: ev,
+    };
   }
 
   public completeClearanceBufferAndReopen(

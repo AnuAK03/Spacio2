@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Download,
   MapPin,
   QrCode,
   ShieldCheck,
@@ -50,18 +49,6 @@ export const QrCheckinScannerModal: React.FC<QrCheckinScannerModalProps> = ({
     await navigator.clipboard.writeText(booking.accessCode);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
-  };
-
-  const handleDownloadQr = () => {
-    const img = document.querySelector<HTMLImageElement>(
-      `img[alt="Entry QR pass for ${booking.id}"]`
-    );
-    if (img?.src) {
-      const link = document.createElement('a');
-      link.href = img.src;
-      link.download = `${booking.id}-entry-qr.png`;
-      link.click();
-    }
   };
 
   return (
@@ -140,28 +127,21 @@ export const QrCheckinScannerModal: React.FC<QrCheckinScannerModalProps> = ({
               <span>
                 {booking.status === 'checked-in' || booking.status === 'occupied'
                   ? 'You are checked in'
-                  : 'Confirmed & Paid — Ready at Gate'}
+                  : 'Confirmed & Paid — Live Gate Pass'}
               </span>
             </div>
             <p className="mt-1 text-xs text-emerald-900">
-              Show this QR code to the parking guard or entrance scanner when you arrive. You do
-              not need to scan anything yourself.
+              Show this live QR code to the parking guard or entrance scanner when you arrive. Saving
+              screenshots/images is disabled for gate security; if no attendant is present, use Scan
+              Wall QR from your active booking card.
             </p>
           </div>
 
-          <div className="mt-4 flex w-full flex-col gap-2 sm:flex-row sm:justify-center">
-            <button
-              type="button"
-              onClick={handleDownloadQr}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-black/[0.1] bg-white px-4 py-2.5 text-xs font-bold text-[#111827] hover:border-[#047857]"
-            >
-              <Download className="h-3.5 w-3.5 text-[#047857]" />
-              <span>Save QR Image</span>
-            </button>
+          <div className="mt-4 flex w-full justify-center">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl bg-[#111827] px-5 py-2.5 text-xs font-bold text-white hover:bg-black"
+              className="rounded-xl bg-[#111827] px-6 py-2.5 text-xs font-bold text-white hover:bg-black"
             >
               Close
             </button>

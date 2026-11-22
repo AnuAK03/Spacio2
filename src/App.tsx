@@ -40,7 +40,6 @@ import {
   ExtensionAlternative,
   IncidentRecord,
   OperationalCheckRecord,
-  PaymentOrder,
   PrepaidWallet,
   ProviderRecord,
   ProviderVerificationStatus,
@@ -74,6 +73,13 @@ export default function App() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
 
   const showToast = useCallback((type: 'success' | 'error', message: string) => {
     setToast({ type, message });
@@ -218,73 +224,6 @@ export default function App() {
     return data.booking as BookingRecord;
   };
 
-  const handleCompleteInstantPayment = async (
-    bookingId: string
-  ): Promise<BookingRecord | null> => {
-    const order = await handleCreatePaymentOrder(bookingId);
-    if (!order) return null;
-    const res = await apiFetch(`/api/payments/orders/${order.id}/gateway-dispatch`, {
-      method: 'POST',
-      body: JSON.stringify({ outcome: 'payment.succeeded' }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast('error', data.error || 'Payment could not be completed');
-      return null;
-    }
-    setSnapshot(data.snapshot);
-    showToast('success', 'Payment confirmed! Your Entry QR Pass is ready.');
-    return (data.booking as BookingRecord) || null;
-  };
-
-  const handleCreatePaymentOrder = async (bookingId: string): Promise<PaymentOrder | null> => {
-    const res = await apiFetch('/api/payments/orders', {
-      method: 'POST',
-      body: JSON.stringify({ bookingId }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast('error', data.error || 'Failed to generate payment order');
-      return null;
-    }
-    setSnapshot(data.snapshot);
-    showToast(
-      'success',
-      `Server payment order ${data.order.id} created (₹${data.order.amountInr}).`
-    );
-    return data.order;
-  };
-
-  const handleDispatchGatewayWebhook = async (
-    orderId: string,
-    outcome: 'payment.succeeded' | 'payment.failed',
-    customEventId?: string
-  ) => {
-    const res = await apiFetch(`/api/payments/orders/${orderId}/gateway-dispatch`, {
-      method: 'POST',
-      body: JSON.stringify({ outcome, eventId: customEventId }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      showToast('error', data.error || 'Gateway webhook error');
-      return;
-    }
-    setSnapshot(data.snapshot);
-    if (data.duplicate) {
-      showToast(
-        'success',
-        `Duplicate webhook ${data.webhookEvent.eventId} safely ignored (idempotent).`
-      );
-    } else if (outcome === 'payment.failed') {
-      showToast('error', 'Payment failed at gateway — slot hold released safely.');
-    } else {
-      showToast(
-        'success',
-        `Signed webhook verified! Booking ${data.booking?.id} confirmed (${data.booking?.invoiceNumber}).`
-      );
-    }
-  };
-
   const handleBookingAction = async (
     bookingId: string,
     action: 'checkin' | 'checkout' | 'cancel',
@@ -299,7 +238,22 @@ export default function App() {
       showToast('error', data.error || 'Booking update blocked');
       return;
     }
+    if (data.wallet && user && data.wallet.driverEmail?.toLowerCase() === user.email.toLowerCase()) {
+      setUserWallet(data.wallet);
+    }
     setSnapshot(data.snapshot);
+    if (action === 'checkout') {
+      const extraInr = Number(data.extraHoursDeductedInr || 0);
+      const extraMins = Number(data.extraMinutesCharged || 0);
+      const rem = Number(data.remainingBalanceInr ?? data.wallet?.balanceInr ?? 0);
+      showToast(
+        'success',
+        extraInr > 0
+          ? `Checked out! Extra hours deducted: ₹${extraInr}${extraMins ? ` (+${extraMins}m)` : ''} · Remaining wallet balance: ₹${rem}.`
+          : `Checked out! Remaining wallet balance: ₹${rem}.`
+      );
+      return;
+    }
     showToast('success', `Booking ${bookingId} updated (${data.booking.status}).`);
   };
 
@@ -558,7 +512,12 @@ export default function App() {
     }
     if (data.wallet) setUserWallet(data.wallet);
     if (data.snapshot) setSnapshot(data.snapshot);
-    showToast('success', 'Paid from Prepaid Wallet! Your Entry QR Pass is ready.');
+    const deducted = Number(data.deductedInr ?? data.booking?.totalAmountInr ?? 0);
+    const remaining = Number(data.remainingBalanceInr ?? data.wallet?.balanceInr ?? 0);
+    showToast(
+      'success',
+      `Paid ₹${deducted} from Prepaid Wallet! Remaining wallet balance: ₹${remaining}.`
+    );
     return (data.booking as BookingRecord) || null;
   };
 
@@ -646,9 +605,17 @@ export default function App() {
       setUserWallet(data.wallet);
     }
     if (data.snapshot) setSnapshot(data.snapshot);
+    const extraInr = Number(data.extraHoursDeductedInr || 0);
+    const extraMins = Number(data.extraMinutesCharged || 0);
+    const unpaidDue = Number(data.unpaidDueInr || 0);
+    const remaining = Number(data.remainingBalanceInr ?? data.wallet?.balanceInr ?? 0);
     showToast(
       'success',
-      'Departure confirmed! 15-minute clearance buffer started before space reopens.'
+      extraInr > 0
+        ? `Checked out! Extra hours deducted: ₹${extraInr}${extraMins ? ` (+${extraMins}m)` : ''} · Remaining wallet balance: ₹${remaining}.`
+        : unpaidDue > 0
+        ? `Checked out! ₹${unpaidDue} extra-hours due recorded · Remaining wallet balance: ₹${remaining}.`
+        : `Checked out! Remaining wallet balance: ₹${remaining}.`
     );
   };
 
@@ -1085,6 +1052,23 @@ export default function App() {
     <div className="relative min-h-screen text-[#111827]">
       <LiveMobilityBackground />
 
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
       <header className="sticky top-0 z-30 border-b border-black/[0.07] bg-white/85 backdrop-blur-xl">
         <div className="h-1 w-full bg-gradient-to-r from-[#FF5A1F] via-[#F59E0B] to-[#059669]" />
         <div className="mx-auto flex h-16 max-w-[1360px] items-center justify-between gap-4 px-4 sm:px-6">
@@ -1261,7 +1245,6 @@ export default function App() {
                 onSelectLocation={handleSelectLocation}
                 onSaveProfile={handleSaveDriverProfile}
                 onCreateHold={handleCreateHold}
-                onCompleteInstantPayment={handleCompleteInstantPayment}
                 onPayWithWallet={handlePayWithWallet}
                 onTopUpWallet={handleTopUpWallet}
                 onNavigateDashboard={() => setActiveTab('dashboard')}
@@ -1283,8 +1266,6 @@ export default function App() {
                 driverProfile={currentDriverProfile}
                 wallet={currentWallet}
                 lifecycleEvents={snapshot.lifecycleEvents}
-                onCreatePaymentOrder={handleCreatePaymentOrder}
-                onDispatchGatewayWebhook={handleDispatchGatewayWebhook}
                 onBookingAction={handleBookingAction}
                 onResolveOverstayImpact={handleResolveOverstayImpact}
                 onRequestExtension={handleRequestExtension}
@@ -1294,11 +1275,11 @@ export default function App() {
                 onMarkNotificationRead={handleMarkNotificationRead}
                 onTopUpWallet={handleTopUpWallet}
                 onPayWithWallet={handlePayWithWallet}
-                onRunLifecycleCheck={handleRunLifecycleCheck}
                 onRespondExtensionOffer={handleRespondExtensionOffer}
                 onSendDepartureSignal={handleSendDepartureSignal}
                 onConfirmDeparture={handleConfirmDeparture}
                 onCompleteClearance={handleCompleteClearance}
+                onVerifyQrCheckin={handleVerifyQrCheckin}
                 onFindParking={() => setActiveTab('find')}
                 onOpenProfile={() => setActiveTab('profile')}
               />

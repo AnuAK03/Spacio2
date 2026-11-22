@@ -83,6 +83,15 @@ async function startServer() {
     });
   });
 
+  app.get('/api/maps/config', (_req, res) => {
+    const apiKey = (
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      ''
+    ).trim();
+    res.json({ apiKey });
+  });
+
   app.get('/api/auth/status', (_req, res) => {
     res.json(getAdminAuthStatus());
   });
@@ -569,12 +578,29 @@ async function startServer() {
     const result = store.performBookingAction(id, action, {
       arrivalMinutesLate:
         typeof arrivalMinutesLate === 'number' ? arrivalMinutesLate : undefined,
-    });
+    }) as {
+      ok: boolean;
+      booking?: unknown;
+      wallet?: unknown;
+      extraHoursDeductedInr?: number;
+      extraMinutesCharged?: number;
+      remainingBalanceInr?: number;
+      unpaidDueInr?: number;
+      error?: string;
+    };
     if (!result.ok) {
       res.status(409).json({ error: result.error });
       return;
     }
-    res.json({ booking: result.booking, snapshot: store.getSnapshot() });
+    res.json({
+      booking: result.booking,
+      wallet: result.wallet,
+      extraHoursDeductedInr: result.extraHoursDeductedInr,
+      extraMinutesCharged: result.extraMinutesCharged,
+      remainingBalanceInr: result.remainingBalanceInr,
+      unpaidDueInr: result.unpaidDueInr,
+      snapshot: store.getSnapshot(),
+    });
   });
 
   app.post('/api/bookings/:id/extend', async (req, res) => {
@@ -720,7 +746,13 @@ async function startServer() {
       res.status(409).json({ error: result.error, wallet: result.wallet });
       return;
     }
-    res.json({ booking: result.booking, wallet: result.wallet, snapshot: store.getSnapshot() });
+    res.json({
+      booking: result.booking,
+      wallet: result.wallet,
+      deductedInr: result.deductedInr ?? result.booking?.totalAmountInr ?? 0,
+      remainingBalanceInr: result.remainingBalanceInr ?? result.wallet?.balanceInr ?? 0,
+      snapshot: store.getSnapshot(),
+    });
   });
 
   app.post('/api/host/scanner/verify-entry', async (req, res) => {
@@ -851,6 +883,10 @@ async function startServer() {
     res.json({
       booking: result.booking,
       wallet: result.wallet,
+      extraHoursDeductedInr: result.extraHoursDeductedInr ?? 0,
+      extraMinutesCharged: result.extraMinutesCharged ?? 0,
+      remainingBalanceInr: result.remainingBalanceInr ?? result.wallet?.balanceInr ?? 0,
+      unpaidDueInr: result.unpaidDueInr ?? result.wallet?.unpaidDueInr ?? 0,
       lifecycleEvent: result.lifecycleEvent,
       snapshot: store.getSnapshot(),
     });

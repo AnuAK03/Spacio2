@@ -3,13 +3,12 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Download,
   MapPin,
   QrCode,
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { BookingRecord, Facility } from '../types/parkpool';
+import { BookingRecord, Facility, PrepaidWallet } from '../types/parkpool';
 import {
   BookingEntranceQrPayload,
   generateBookingConfirmationQr,
@@ -18,6 +17,7 @@ import {
 interface BookingConfirmationCardProps {
   booking: BookingRecord;
   facility?: Facility;
+  wallet?: PrepaidWallet;
   onClose: () => void;
   asModal?: boolean;
 }
@@ -33,6 +33,7 @@ function fmt12(min: number): string {
 export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = ({
   booking,
   facility,
+  wallet,
   onClose,
   asModal = true,
 }) => {
@@ -64,14 +65,6 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
     await navigator.clipboard.writeText(encodedPayload);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleDownloadQr = () => {
-    if (!qrDataUrl) return;
-    const link = document.createElement('a');
-    link.href = qrDataUrl;
-    link.download = `${booking.id}-entry-qr.png`;
-    link.click();
   };
 
   const cardContent = (
@@ -110,15 +103,20 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
 
       <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-12">
         {/* Left: Driver Entry QR Pass */}
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-black/[0.08] bg-[#F8F7F4] p-4 sm:p-5 text-center md:col-span-5">
+        <div
+          onContextMenu={(e) => e.preventDefault()}
+          className="flex select-none flex-col items-center justify-center rounded-2xl border border-black/[0.08] bg-[#F8F7F4] p-4 sm:p-5 text-center md:col-span-5"
+        >
           {qrDataUrl ? (
             <img
               src={qrDataUrl}
               alt={`Entry QR pass for ${booking.id}`}
               width={188}
               height={188}
+              draggable={false}
+              onContextMenu={(e) => e.preventDefault()}
               referrerPolicy="no-referrer"
-              className="rounded-xl border border-black/[0.08] bg-white p-2 shadow-sm"
+              className="pointer-events-none select-none rounded-xl border border-black/[0.08] bg-white p-2 shadow-sm"
             />
           ) : (
             <div className="flex h-44 w-44 flex-col items-center justify-center rounded-xl border border-black/[0.08] bg-white p-4">
@@ -141,15 +139,6 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              disabled={!qrDataUrl}
-              onClick={handleDownloadQr}
-              className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg border border-black/[0.1] bg-white px-3 py-1.5 text-xs font-bold text-[#111827] hover:border-[#047857] disabled:opacity-50"
-            >
-              <Download className="h-3.5 w-3.5 text-[#047857]" />
-              <span>Save QR Pass</span>
-            </button>
             <button
               type="button"
               disabled={!encodedPayload}
@@ -195,13 +184,34 @@ export const BookingConfirmationCard: React.FC<BookingConfirmationCardProps> = (
             </div>
 
             <div className="rounded-xl bg-[#F8F7F4] p-3.5 text-xs">
-              <div className="font-semibold text-[#4B5563]">Total Paid</div>
-              <div className="mt-1 font-mono text-sm font-bold text-[#047857]">
-                ₹{booking.totalAmountInr}
+              <div className="font-semibold text-[#4B5563]">Paid via Prepaid Wallet</div>
+              <div className="mt-1 space-y-0.5 text-[11px] text-[#4B5563]">
+                <div className="flex justify-between">
+                  <span>Parking Charge</span>
+                  <span className="font-mono">₹{booking.baseAmountInr}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Service Fee</span>
+                  <span className="font-mono">₹{booking.platformFeeInr}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>GST (18%)</span>
+                  <span className="font-mono">₹{booking.gstInr}</span>
+                </div>
               </div>
-              <div className="mt-0.5 text-[#4B5563]">
-                {booking.invoiceNumber ? `Receipt ${booking.invoiceNumber}` : 'Payment confirmed'}
+              <div className="mt-1.5 flex justify-between border-t border-black/[0.08] pt-1 font-mono text-xs font-bold text-[#047857]">
+                <span>Total Deducted</span>
+                <span>₹{booking.totalAmountInr}</span>
               </div>
+              {wallet ? (
+                <div className="mt-1 font-mono text-xs font-bold text-[#111827]">
+                  Remaining Balance: ₹{wallet.balanceInr}
+                </div>
+              ) : (
+                <div className="mt-0.5 text-[#4B5563]">
+                  {booking.invoiceNumber ? `Receipt ${booking.invoiceNumber}` : 'Payment confirmed'}
+                </div>
+              )}
             </div>
           </div>
 

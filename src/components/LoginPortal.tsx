@@ -364,6 +364,72 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
 
         {/* Right Simple Auth Card */}
         <div className="flex flex-col justify-center p-6 sm:p-8 lg:col-span-6">
+          {/* Visible 3-Role Selector (Driver, Provider, Admin) */}
+          <div className="mb-4">
+            <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-[#4B5563]">
+              Select Workspace Role
+            </div>
+            <div className="grid grid-cols-3 gap-2" role="group" aria-label="Workspace role">
+              {ROLE_OPTIONS.map((opt) => {
+                const Icon = opt.icon;
+                const active = authMode !== 'admin' && selectedRole === opt.role;
+                return (
+                  <button
+                    key={opt.role}
+                    type="button"
+                    onClick={() => {
+                      handleSelectRole(opt);
+                      if (authMode === 'admin') {
+                        switchMode('signin');
+                      }
+                    }}
+                    className={`rounded-xl border p-2.5 text-left transition-all ${
+                      active
+                        ? `${opt.accentBorder} ${opt.accentBg}`
+                        : 'border-black/[0.08] bg-[#F8F7F4] hover:border-black/20'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Icon
+                        className={`h-4 w-4 shrink-0 ${
+                          active ? opt.accentText : 'text-[#4B5563]'
+                        }`}
+                      />
+                      <span className="font-display text-xs font-bold text-[#111827]">
+                        {opt.title}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[10px] text-[#4B5563]">
+                      {opt.subtitle}
+                    </div>
+                  </button>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={() => switchMode('admin')}
+                className={`rounded-xl border p-2.5 text-left transition-all ${
+                  authMode === 'admin'
+                    ? 'border-[#4338CA] bg-indigo-50 ring-1 ring-[#4338CA]'
+                    : 'border-black/[0.08] bg-[#F8F7F4] hover:border-indigo-300'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck
+                    className={`h-4 w-4 shrink-0 ${
+                      authMode === 'admin' ? 'text-[#4338CA]' : 'text-[#4B5563]'
+                    }`}
+                  />
+                  <span className="font-display text-xs font-bold text-[#111827]">Admin</span>
+                </div>
+                <div className="mt-0.5 truncate text-[10px] text-[#4B5563]">
+                  Verify, audit &amp; ops
+                </div>
+              </button>
+            </div>
+          </div>
+
           {authMode === 'forgot' ? (
             <div className="space-y-4">
               <div>
@@ -499,14 +565,6 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
           ) : authMode === 'admin' ? (
             <div className="space-y-4">
               <div>
-                <button
-                  type="button"
-                  onClick={() => switchMode('signin')}
-                  className="mb-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#4B5563] hover:text-[#111827]"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  <span>Back to User Sign In</span>
-                </button>
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="h-5 w-5 text-[#4338CA]" />
                   <h2 className="font-display text-2xl font-bold text-[#111827]">
@@ -518,7 +576,7 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
                 <p className="mt-1 text-xs text-[#4B5563]">
                   {adminMode === 'unclaimed'
                     ? 'Claim administrator access by setting an admin passcode for this workspace.'
-                    : 'Enter your administrator passcode to verify and govern ParkPool operations.'}
+                    : 'Enter your administrator passcode to verify providers, spaces, disputes & ops.'}
                 </p>
               </div>
 
@@ -636,8 +694,8 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
               <div>
                 <h2 className="font-display text-2xl font-bold text-[#111827]">
                   {authMode === 'signin'
-                    ? 'Sign In to ParkPool AI'
-                    : 'Create Your Account'}
+                    ? `Sign In as ${selectedRole === 'host' ? 'Provider' : 'Driver'}`
+                    : `Register as ${selectedRole === 'host' ? 'Provider' : 'Driver'}`}
                 </h2>
                 <p className="mt-1 text-xs text-[#4B5563]">
                   {authMode === 'signin'
@@ -786,49 +844,9 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
                       Register an account
                     </button>
                   </div>
-
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => switchMode('admin')}
-                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#4B5563] hover:text-[#4338CA]"
-                    >
-                      <ShieldCheck className="h-3.5 w-3.5" />
-                      <span>Operations Admin Portal</span>
-                    </button>
-                  </div>
                 </form>
               ) : (
                 <form onSubmit={(e) => void handleRegisterSubmit(e)} className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    {ROLE_OPTIONS.map((opt) => {
-                      const Icon = opt.icon;
-                      const active = selectedRole === opt.role;
-                      return (
-                        <button
-                          key={opt.role}
-                          type="button"
-                          onClick={() => handleSelectRole(opt)}
-                          className={`rounded-xl border p-2.5 text-left transition-all ${
-                            active
-                              ? `${opt.accentBorder} ${opt.accentBg}`
-                              : 'border-black/[0.08] bg-[#F8F7F4] hover:border-black/20'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Icon
-                              className={`h-4 w-4 ${active ? opt.accentText : 'text-[#4B5563]'}`}
-                            />
-                            <span className="font-display text-xs font-bold text-[#111827]">
-                              {opt.title}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-[11px] text-[#4B5563]">{opt.subtitle}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
                       <label
@@ -986,17 +1004,6 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
                       className="font-bold text-[#C83709] hover:underline"
                     >
                       Sign in here
-                    </button>
-                  </div>
-
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => switchMode('admin')}
-                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#4B5563] hover:text-[#4338CA]"
-                    >
-                      <ShieldCheck className="h-3.5 w-3.5" />
-                      <span>Operations Admin Portal</span>
                     </button>
                   </div>
                 </form>

@@ -16,6 +16,7 @@ interface LiveTrackingPanelProps {
   facilities: Facility[];
   locations: BengaluruLocation[];
   onCheckInBooking: (bookingId: string) => Promise<void>;
+  onOpenMapDirections?: (bookingId: string) => void;
 }
 
 function calcDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -48,6 +49,7 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
   facilities,
   locations,
   onCheckInBooking,
+  onOpenMapDirections,
 }) => {
   const trackableBookings = useMemo(
     () =>
@@ -286,6 +288,17 @@ export const LiveTrackingPanel: React.FC<LiveTrackingPanelProps> = ({
                 ))}
               </select>
             )
+          )}
+
+          {activeBooking && onOpenMapDirections && (
+            <button
+              type="button"
+              onClick={() => onOpenMapDirections(activeBooking.id)}
+              className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-xl border border-indigo-200 bg-indigo-50/80 px-3 py-2 text-xs font-bold text-[#4338CA] hover:bg-indigo-100"
+            >
+              <Navigation className="h-3.5 w-3.5" />
+              <span>Live Map Directions</span>
+            </button>
           )}
 
           {activeBooking && !isCheckedIn && (

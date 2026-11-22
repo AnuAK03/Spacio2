@@ -135,6 +135,92 @@ async function callOpenRouter(params: {
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function parseIntentDeterministically(
+  prompt: string,
+  vehicle: VehicleProfile,
+  fallbackStart: string,
+  fallbackEnd: string
+): {
+  destination: string;
+  startTimeHHMM: string;
+  endTimeHHMM: string;
+  prioritize: 'balanced' | 'closest_walk' | 'lowest_price' | 'covered_ev';
+  maxWalkMeters: number;
+  needsEv: boolean;
+  needsCovered: boolean;
+  policyConcern?: string;
+} {
+  const lower = prompt.toLowerCase();
+  const timeMatches = Array.from(prompt.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)).map(
+    (m) => `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`
+  );
+  const startTimeHHMM = timeMatches[0] || fallbackStart;
+  const endTimeHHMM = timeMatches[1] || fallbackEnd;
+
+  const matchedHub = BENGALURU_LOCATIONS.find(
+    (l) =>
+      lower.includes(l.name.toLowerCase()) ||
+      lower.includes(l.area.toLowerCase().split('/')[0].trim())
+  );
+  const nearMatch = prompt.match(/(?:near|at)\s+([A-Za-z0-9\s,&-]+?)(?:\s+from|\s+between|\.|$)/i);
+  const destination =
+    matchedHub?.name ||
+    (nearMatch?.[1]?.trim() ? nearMatch[1].trim() : 'Phoenix Mall of Asia, Bengaluru');
+
+  const needsEv = vehicle.isEv || /\bev\b|charg/i.test(prompt);
+  const needsCovered = /\bcover|shaded|basement\b/i.test(prompt);
+  let prioritize: 'balanced' | 'closest_walk' | 'lowest_price' | 'covered_ev' = 'balanced';
+  if (/closest|nearest|walk|distance|under\s+\d+\s*m/i.test(prompt)) {
+    prioritize = 'closest_walk';
+  } else if (/cheap|lowest|budget|price/i.test(prompt)) {
+    prioritize = 'lowest_price';
+  } else if (needsEv || needsCovered) {
+    prioritize = 'covered_ev';
+  }
+
+  const walkMatch = prompt.match(/(\d{2,4})\s*m\b/i);
+  const maxWalkMeters = walkMatch ? Math.max(150, Number(walkMatch[1])) : 550;
+
+  return {
+    destination,
+    startTimeHHMM,
+    endTimeHHMM,
+    prioritize,
+    maxWalkMeters,
+    needsEv,
+    needsCovered,
+  };
+}
+
+function answerPolicyDeterministically(question: string): {
+  answer: string;
+  citations: Array<{ docId: string; title: string; section: string }>;
+} {
+  const words = question
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 2);
+
+  const scored = POLICY_RAG_CORPUS.map((doc) => {
+    const haystack = `${doc.title} ${doc.section} ${doc.content}`.toLowerCase();
+    const score = words.reduce((acc, w) => acc + (haystack.includes(w) ? 1 : 0), 0);
+    return { doc, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const matched = (scored[0]?.score > 0 ? scored.slice(0, 2) : scored.slice(0, 1)).map(
+    (s) => s.doc
+  );
+
+  return {
+    answer: matched.map((d) => `${d.title}: ${d.content}`).join(' '),
+    citations: matched.map((d) => ({
+      docId: d.id,
+      title: d.title,
+      section: d.section,
+    })),
+  };
+}
+
 export async function runSupervisedMultiAgentWorkflow(
   input: {
     prompt: string;
@@ -150,8 +236,7 @@ export async function runSupervisedMultiAgentWorkflow(
   const workflowStart = Date.now();
   const runId = `RUN-${Date.now().toString(36).toUpperCase()}`;
 
-  // Validate OpenRouter API key upfront before running workflow stages
-  const { model: configuredModel } = getOpenRouterConfig();
+  const configuredModel = process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
 
   const vehicle: VehicleProfile =
     store.vehicles.find((v) => v.id === input.vehicleId) || store.vehicles[0];
@@ -181,10 +266,14 @@ export async function runSupervisedMultiAgentWorkflow(
   const fallbackStart = input.defaultStartTime || '14:00';
   const fallbackEnd = input.defaultEndTime || '17:30';
 
-  const intentResult = await callOpenRouter({
-    systemPrompt:
-      'You are a structured parking intent parser for Bengaluru. Respond ONLY with a raw valid JSON object (no markdown fences, no commentary).',
-    userPrompt: `Extract structured parking search requirements from this driver request for Bengaluru.
+  let parsedRaw: Record<string, unknown>;
+  let s1ExecutionMode: 'openrouter_llm' | 'deterministic_service' = 'openrouter_llm';
+  let s1ModelUsed = configuredModel;
+  try {
+    const intentResult = await callOpenRouter({
+      systemPrompt:
+        'You are a structured parking intent parser for Bengaluru. Respond ONLY with a raw valid JSON object (no markdown fences, no commentary).',
+      userPrompt: `Extract structured parking search requirements from this driver request for Bengaluru.
 Driver Request: "${input.prompt}"
 Selected Vehicle: ${vehicle.label} (${vehicle.vehicleType}, EV=${vehicle.isEv}, ${vehicle.lengthCm}x${vehicle.widthCm}x${vehicle.heightCm}cm)
 Default Time Window if not specified in prompt: ${fallbackStart} to ${fallbackEnd}
@@ -200,10 +289,16 @@ Return a JSON object with EXACTLY these keys:
   "needsCovered": boolean,
   "policyConcern": string (optional)
 }`,
-    expectJson: true,
-  });
+      expectJson: true,
+    });
+    parsedRaw = extractJsonObject(intentResult.text);
+    s1ModelUsed = intentResult.modelUsed || configuredModel;
+  } catch {
+    parsedRaw = parseIntentDeterministically(input.prompt, vehicle, fallbackStart, fallbackEnd);
+    s1ExecutionMode = 'deterministic_service';
+    s1ModelUsed = 'deterministic-intent-parser';
+  }
 
-  const parsedRaw = extractJsonObject(intentResult.text);
   let reqStartMin = parseTimeToMinutes(
     typeof parsedRaw.startTimeHHMM === 'string' ? parsedRaw.startTimeHHMM : fallbackStart,
     14 * 60
@@ -282,12 +377,12 @@ Return a JSON object with EXACTLY these keys:
     agentId: 'intent_policy_agent',
     agentName: 'Parking Intent & Policy Agent',
     roleDescription: 'Extracts destination, slot window, vehicle constraints, and policy intent.',
-    executionMode: 'openrouter_llm',
+    executionMode: s1ExecutionMode,
     status: s1Violations.length > 0 ? 'corrected' : 'completed',
     latencyMs: Date.now() - s1Start,
     outputSummary: `Parsed "${parsedIntent.destination}" for ${parsedIntent.startTimeLabel}–${parsedIntent.endTimeLabel}, priority=${parsedIntent.prioritize}, maxWalk=${parsedIntent.maxWalkMeters}m.`,
     structuredData: parsedIntent,
-    evidenceRefs: [`openrouter:${intentResult.modelUsed || configuredModel}`, `vehicle:${vehicle.id}`],
+    evidenceRefs: [`model:${s1ModelUsed}`, `vehicle:${vehicle.id}`],
     supervisorAudit: s1Audit,
   };
   stages.push(stage1);
@@ -558,10 +653,13 @@ Return a JSON object with EXACTLY these keys:
     };
   });
 
-  const pricingTrustResult = await callOpenRouter({
-    systemPrompt:
-      'You are the Pricing & Trust Auditor for ParkPool AI. Respond ONLY with a raw valid JSON object (no markdown fences, no commentary).',
-    userPrompt: `Analyze these verified parking candidates and produce concise, strictly evidence-grounded pricing, walking-route, and review-trust summaries.
+  let pricingParsed: Record<string, unknown>;
+  let s4ExecutionMode: 'openrouter_llm' | 'deterministic_service' = 'openrouter_llm';
+  try {
+    const pricingTrustResult = await callOpenRouter({
+      systemPrompt:
+        'You are the Pricing & Trust Auditor for ParkPool AI. Respond ONLY with a raw valid JSON object (no markdown fences, no commentary).',
+      userPrompt: `Analyze these verified parking candidates and produce concise, strictly evidence-grounded pricing, walking-route, and review-trust summaries.
 RULES:
 1. Quote ONLY the exact totalQuoteInr values provided in the input JSON.
 2. Cite ONLY the provided bookingId values for reviews. Never invent reviews.
@@ -583,10 +681,30 @@ Return a JSON object with EXACTLY these keys:
 
 Candidates JSON:
 ${JSON.stringify(topForAnalysis, null, 2)}`,
-    expectJson: true,
-  });
-
-  const pricingParsed = extractJsonObject(pricingTrustResult.text);
+      expectJson: true,
+    });
+    pricingParsed = extractJsonObject(pricingTrustResult.text);
+  } catch {
+    s4ExecutionMode = 'deterministic_service';
+    pricingParsed = {
+      priceSummary:
+        topForAnalysis.length > 0
+          ? `Server-verified quotes ready across ${topForAnalysis.length} compliant bay(s): ${topForAnalysis
+              .map((c) => `${c.spaceCode} at ₹${c.totalQuoteInr} (${c.walkingDistanceM}m walk)`)
+              .join(', ')}.`
+          : 'No verified bay matches the requested slot and vehicle dimensions.',
+      trustAndReviewHighlights: topForAnalysis.map((c) => ({
+        spaceId: c.spaceId,
+        quotedInr: c.totalQuoteInr,
+        citedBookingIds: c.reviews.map((r) => r.bookingId),
+        summary:
+          c.reviews.length > 0
+            ? `${c.reviews.length} completed-trip review(s) cited via ${c.entranceLabel}; server quote ₹${c.totalQuoteInr} includes GST & platform fee.`
+            : `Verified access via ${c.entranceLabel}; server quote ₹${c.totalQuoteInr} includes GST & platform fee.`,
+      })),
+      safetyDisclaimerIncluded: true,
+    };
+  }
   const s4Violations: string[] = [];
   let s4Corrective = 'None required — all quoted INR totals and review citations match backend records.';
 
@@ -633,7 +751,7 @@ ${JSON.stringify(topForAnalysis, null, 2)}`,
     agentId: 'pricing_trust_agent',
     agentName: 'Pricing, Review & Trust Agent',
     roleDescription: 'Validates server-side quotes, summarizes eligible reviews, and surfaces access safety notes.',
-    executionMode: 'openrouter_llm',
+    executionMode: s4ExecutionMode,
     status: s4Violations.length > 0 ? 'corrected' : 'completed',
     latencyMs: Date.now() - s4Start,
     outputSummary:
@@ -676,16 +794,28 @@ Violations Intercepted & Corrected Mid-Flight: ${totalCaught} (${stages.flatMap(
 Human Confirmation Lock: Enforced (no booking committed without explicit user confirmation).
 Policy Context Reference: ${POLICY_RAG_CORPUS.map((d) => d.id).join(', ')}`;
 
-  const finalAuditResult = await callOpenRouter({
-    systemPrompt:
-      'You are the ParkPool AI Supervisor Verification Agent. Write a concise 2-3 sentence plain-text verification summary.',
-    userPrompt: supervisorSummaryPrompt,
-    expectJson: false,
-  });
+  const topRec = orderedForAnalysis[0];
+  let supervisorFinalReport = topRec
+    ? `Spot ${topRec.spaceCode} at ${topRec.facilityName} is verified compatible for ${vehicle.label} (${parsedIntent.startTimeLabel}–${parsedIntent.endTimeLabel}) at ₹${topRec.totalQuoteInr} total via ${topRec.entranceLabel}. ${totalCaught > 0 ? `${totalCaught} scheduling or policy violation(s) were caught automatically.` : 'All availability, vehicle fit, and buffer checks passed.'}`
+    : `No compatible verified bay is available for ${vehicle.label} during ${parsedIntent.startTimeLabel}–${parsedIntent.endTimeLabel}.`;
+  let s5ExecutionMode: 'openrouter_llm' | 'deterministic_service' = 'openrouter_llm';
+  let s5ModelUsed = configuredModel;
 
-  const supervisorFinalReport =
-    finalAuditResult.text ||
-    `Supervisor verified ${verifiedEligible.length} compliant parking option(s) for ${vehicle.label} (${parsedIntent.startTimeLabel}–${parsedIntent.endTimeLabel}) with ${totalCaught} mid-flight violation(s) caught and corrected.`;
+  try {
+    const finalAuditResult = await callOpenRouter({
+      systemPrompt:
+        'You are the ParkPool AI Supervisor Verification Agent. Write a concise 2-3 sentence plain-text verification summary.',
+      userPrompt: supervisorSummaryPrompt,
+      expectJson: false,
+    });
+    if (finalAuditResult.text) {
+      supervisorFinalReport = finalAuditResult.text;
+    }
+    s5ModelUsed = finalAuditResult.modelUsed || configuredModel;
+  } catch {
+    s5ExecutionMode = 'deterministic_service';
+    s5ModelUsed = 'deterministic-supervisor';
+  }
 
   const s5Audit: SupervisorAudit = {
     verdict: verifiedEligible.length === 0 ? 'REJECTED' : totalCaught > 0 ? 'FLAGGED_AND_CORRECTED' : 'VERIFIED',
@@ -699,7 +829,7 @@ Policy Context Reference: ${POLICY_RAG_CORPUS.map((d) => d.id).join(', ')}`;
     correctiveAction:
       verifiedEligible.length === 0
         ? 'No compatible bays available in requested window; blocked booking progression safely.'
-        : 'Ready for explicit user hold & transactional booking confirmation.',
+        : 'Ready for explicit user wallet confirmation.',
     verifierNotes: 'Supervisor final sign-off complete. Confirmed bookings remain protected.',
     checkedAtIso: new Date().toISOString(),
   };
@@ -713,13 +843,12 @@ Policy Context Reference: ${POLICY_RAG_CORPUS.map((d) => d.id).join(', ')}`;
     violations: [],
   });
 
-  const topRec = orderedForAnalysis[0];
   const stage5: AgentStageResult = {
     stageOrder: 5,
     agentId: 'booking_supervisor_agent',
     agentName: 'Booking Coordination & Supervisor Sign-Off',
     roleDescription: 'Enforces human confirmation gate, verifies entrance routing, and signs off full workflow accuracy.',
-    executionMode: 'openrouter_llm',
+    executionMode: s5ExecutionMode,
     status: verifiedEligible.length === 0 ? 'blocked' : 'completed',
     latencyMs: Date.now() - s5Start,
     outputSummary:
@@ -740,7 +869,7 @@ Policy Context Reference: ${POLICY_RAG_CORPUS.map((d) => d.id).join(', ')}`;
   store.addAudit(
     'Multi-Agent Supervisor',
     'WORKFLOW_VERIFIED',
-    `${runId}: ${verifiedEligible.length} eligible, ${excluded.length} excluded, ${totalCaught} fault(s) intercepted (OpenRouter: ${finalAuditResult.modelUsed}).`
+    `${runId}: ${verifiedEligible.length} eligible, ${excluded.length} excluded, ${totalCaught} fault(s) intercepted (Engine: ${s5ModelUsed}).`
   );
 
   const finalRun: MultiAgentWorkflowRun = {
@@ -777,10 +906,11 @@ export async function askPolicyRagAssistant(question: string): Promise<{
     (doc) => `[${doc.id}] ${doc.title} (${doc.section}):\n${doc.content}`
   ).join('\n\n');
 
-  const response = await callOpenRouter({
-    systemPrompt:
-      'You are the ParkPool AI Customer & Operations Policy Assistant. Respond ONLY with a raw valid JSON object (no markdown fences).',
-    userPrompt: `Answer the user's question using ONLY the approved policy documents below.
+  try {
+    const response = await callOpenRouter({
+      systemPrompt:
+        'You are the ParkPool AI Customer & Operations Policy Assistant. Respond ONLY with a raw valid JSON object (no markdown fences).',
+      userPrompt: `Answer the user's question using ONLY the approved policy documents below.
 If the documents do not cover something, state clearly what is unresolved or requires legal/admin review.
 Return JSON with "answer" (string) and "citedDocIds" (array of matching DOC-* IDs).
 
@@ -788,26 +918,29 @@ Approved Policy Corpus:
 ${corpusText}
 
 User Question: "${question}"`,
-    expectJson: true,
-  });
+      expectJson: true,
+    });
 
-  const parsed = extractJsonObject(response.text);
-  const citedIds: string[] = Array.isArray(parsed.citedDocIds)
-    ? parsed.citedDocIds.map((id) => String(id))
-    : [];
-  const citations = POLICY_RAG_CORPUS.filter((d) => citedIds.includes(d.id)).map((d) => ({
-    docId: d.id,
-    title: d.title,
-    section: d.section,
-  }));
+    const parsed = extractJsonObject(response.text);
+    const citedIds: string[] = Array.isArray(parsed.citedDocIds)
+      ? parsed.citedDocIds.map((id) => String(id))
+      : [];
+    const citations = POLICY_RAG_CORPUS.filter((d) => citedIds.includes(d.id)).map((d) => ({
+      docId: d.id,
+      title: d.title,
+      section: d.section,
+    }));
 
-  return {
-    answer:
-      typeof parsed.answer === 'string' && parsed.answer.trim()
-        ? parsed.answer.trim()
-        : 'No grounded policy answer available.',
-    citations,
-  };
+    return {
+      answer:
+        typeof parsed.answer === 'string' && parsed.answer.trim()
+          ? parsed.answer.trim()
+          : answerPolicyDeterministically(question).answer,
+      citations: citations.length > 0 ? citations : answerPolicyDeterministically(question).citations,
+    };
+  } catch {
+    return answerPolicyDeterministically(question);
+  }
 }
 
 export async function evaluateAutonomousOverstayLifecycle(input: {

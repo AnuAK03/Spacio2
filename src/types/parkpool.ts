@@ -348,6 +348,10 @@ export interface BookingRecord {
   departureSignal?: DepartureSignal;
   actualDepartureAt?: string;
   walletSettledInr?: number;
+  extraHoursChargedInr?: number;
+  extraMinutesCharged?: number;
+  remainingBalanceAfterCheckoutInr?: number;
+  unpaidDueAfterCheckoutInr?: number;
   auditTrail: string[];
 }
 
@@ -576,6 +580,10 @@ export interface CandidateEvaluation {
   walkingMinutes: number;
   entranceLabel: string;
   hourlyPriceInr: number;
+  durationHours?: number;
+  baseAmountInr?: number;
+  platformFeeInr?: number;
+  gstInr?: number;
   totalQuoteInr: number;
   score: number;
   scoreBreakdown: {
@@ -708,7 +716,7 @@ export interface BengaluruLocation {
   area: string;
   lat: number;
   lng: number;
-  source?: 'hub' | 'nominatim';
+  source?: 'hub' | 'nominatim' | 'geocoded';
 }
 
 export interface WorkspaceSnapshot {

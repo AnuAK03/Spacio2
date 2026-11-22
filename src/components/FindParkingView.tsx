@@ -36,7 +36,6 @@ import {
   WheelerCategory,
 } from '../types/parkpool';
 import { BengaluruLiveMap } from './BengaluruLiveMap';
-import { BookingConfirmationCard } from './BookingConfirmationCard';
 import { DriverProfilePayload } from './DriverProfileView';
 
 interface FindParkingViewProps {
@@ -58,7 +57,6 @@ interface FindParkingViewProps {
     startMin: number;
     endMin: number;
   }) => Promise<BookingRecord | null>;
-  onCompleteInstantPayment: (bookingId: string) => Promise<BookingRecord | null>;
   onPayWithWallet: (bookingId: string) => Promise<BookingRecord | null>;
   onTopUpWallet: (amountInr: number) => Promise<void>;
   onNavigateDashboard: () => void;
@@ -146,7 +144,6 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
   onSelectLocation,
   onSaveProfile,
   onCreateHold,
-  onCompleteInstantPayment,
   onPayWithWallet,
   onTopUpWallet,
   onNavigateDashboard,
@@ -474,6 +471,12 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState<BookingRecord | null>(null);
+  const [mapDirectionsActive, setMapDirectionsActive] = useState(false);
+  const [bookedNavigationTarget, setBookedNavigationTarget] = useState<{
+    bookingId: string;
+    facilityId: string;
+    spaceCode: string;
+  } | null>(null);
 
   const activeSlot = useMemo(
     () => ({
@@ -595,6 +598,10 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
           walkingMinutes: dynamicWalkMin,
           entranceLabel: fac.entranceLabel,
           hourlyPriceInr: space.hourlyPriceInr,
+          durationHours: hours,
+          baseAmountInr: base,
+          platformFeeInr: fee,
+          gstInr: gst,
           totalQuoteInr,
           score: eligible ? Math.max(10, Math.round(100 - dynamicDistM * 0.02)) : 0,
           scoreBreakdown: {
@@ -782,7 +789,7 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
     }
   };
 
-  const handleConfirmAndPay = async (mode: 'gateway' | 'wallet' | 'hold') => {
+  const handleConfirmAndPay = async () => {
     if (!targetBay) return;
     setConfirming(true);
     try {
@@ -794,18 +801,10 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
       });
       if (!created) return;
 
-      if (mode === 'wallet') {
-        const walletPaid = await onPayWithWallet(created.id);
-        if (walletPaid) {
-          setConfirmedBooking(walletPaid);
-          return;
-        }
-      } else if (mode === 'gateway') {
-        const paidBooking = await onCompleteInstantPayment(created.id);
-        if (paidBooking) {
-          setConfirmedBooking(paidBooking);
-          return;
-        }
+      const walletPaid = await onPayWithWallet(created.id);
+      if (walletPaid) {
+        setConfirmedBooking(walletPaid);
+        return;
       }
 
       setCheckoutModalOpen(false);
@@ -1288,9 +1287,9 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
         )}
       </section>
 
-      {/* Main Split: Live Map + Available Parking Cards */}
+      {/* Main Split: Live Google Map + Available Parking Cards */}
       <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-12">
-        <div className="min-h-[340px] sm:min-h-[400px] lg:col-span-7 lg:min-h-[450px]">
+        <div className="min-h-[360px] sm:min-h-[420px] lg:col-span-7 lg:min-h-[480px]">
           <BengaluruLiveMap
             destinationName={activeLocation.name}
             destinationCoords={{ lat: activeLocation.lat, lng: activeLocation.lng }}
@@ -1298,6 +1297,30 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
             selectedFacilityId={selectedFacilityId}
             onSelectFacility={setSelectedFacilityId}
             evaluations={evaluatedList}
+            locations={locations}
+            defaultTravelMode={vehicle.wheelerCategory === 'two_wheeler' ? 'TWO_WHEELER' : 'DRIVING'}
+            directionsActive={mapDirectionsActive}
+            onToggleDirections={setMapDirectionsActive}
+            liveTracking={Boolean(bookedNavigationTarget)}
+            bookedSpotCode={
+              bookedNavigationTarget?.facilityId === selectedFacilityId
+                ? bookedNavigationTarget.spaceCode
+                : undefined
+            }
+            onSearchPlaceSelected={(pl) => {
+              const chosenLoc: BengaluruLocation = {
+                id: `GMAP-${Date.now()}`,
+                name: pl.name,
+                area: pl.area,
+                lat: pl.lat,
+                lng: pl.lng,
+                source: 'geocoded',
+              };
+              setDraftLocation(chosenLoc);
+              setLocationQuery(pl.name);
+              setActiveLocation(chosenLoc);
+              void onSelectLocation(chosenLoc);
+            }}
           />
         </div>
 
@@ -1368,8 +1391,12 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                         ₹{cand.hourlyPriceInr}
                         <span className="text-xs font-normal text-[#4B5563]">/hr</span>
                       </div>
-                      <div className="font-mono text-[11px] font-medium text-[#4B5563]">
+                      <div className="font-mono text-[11px] font-bold text-[#111827]">
                         Total ₹{cand.totalQuoteInr}
+                      </div>
+                      <div className="font-mono text-[10px] text-[#4B5563]">
+                        ₹{cand.baseAmountInr ?? cand.hourlyPriceInr} + ₹{cand.platformFeeInr ?? 10} fee + ₹
+                        {cand.gstInr ?? 0} GST
                       </div>
                     </div>
                   </div>
@@ -1567,19 +1594,137 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
         </div>
       )}
 
-      {/* Responsive Pop-Up Booking & Instant Confirmation Modal (No Bottom Scroll) */}
+      {/* Responsive Pop-Up Booking & Instant Confirmation Modal (QR code intentionally hidden until Show QR Code is pressed in Active Bookings) */}
       {checkoutModalOpen &&
         targetBay &&
         (confirmedBooking ? (
-          <BookingConfirmationCard
-            booking={confirmedBooking}
-            facility={targetFacility}
-            onClose={() => {
-              setCheckoutModalOpen(false);
-              setConfirmedBooking(null);
-              onNavigateDashboard();
-            }}
-          />
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-3 sm:p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Booking Confirmed"
+          >
+            <section className="relative my-auto w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border-2 border-[#047857] bg-white p-5 sm:p-6 shadow-2xl">
+              <div className="flex items-start justify-between gap-3 border-b border-black/[0.06] pb-3.5">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#047857]">
+                    <CheckCircle2 className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="font-display text-lg font-bold text-[#111827]">
+                      Booking Confirmed &amp; Paid
+                    </h2>
+                    <p className="mt-0.5 text-xs text-[#4B5563]">
+                      {confirmedBooking.facilityName} · Spot {confirmedBooking.spaceCode}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCheckoutModalOpen(false);
+                    setConfirmedBooking(null);
+                  }}
+                  aria-label="Close booking confirmation"
+                  className="shrink-0 rounded-lg border border-black/[0.08] p-1.5 text-[#4B5563] hover:text-[#111827]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-3 text-xs">
+                <div className="rounded-xl bg-[#F8F7F4] p-3.5 space-y-1.5">
+                  <div className="font-bold text-[#111827]">
+                    {targetFacility?.name || confirmedBooking.facilityName}
+                  </div>
+                  {targetFacility?.address && (
+                    <div className="text-[#4B5563]">{targetFacility.address}</div>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2 pt-1 text-[#374151]">
+                    <span className="flex items-center gap-1 font-semibold text-[#C83709]">
+                      <MapPin className="h-3.5 w-3.5" />
+                      {targetFacility?.entranceLabel || confirmedBooking.entranceLabel}
+                    </span>
+                    <span>·</span>
+                    <span>
+                      {fmt12(confirmedBooking.startMin)} – {fmt12(confirmedBooking.endMin)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-black/[0.08] bg-white p-3.5 space-y-1">
+                  <div className="font-bold text-[#111827]">Paid via Prepaid Wallet</div>
+                  <div className="flex justify-between text-[#4B5563]">
+                    <span>Parking Charge</span>
+                    <span className="font-mono">₹{confirmedBooking.baseAmountInr}</span>
+                  </div>
+                  <div className="flex justify-between text-[#4B5563]">
+                    <span>Service Fee</span>
+                    <span className="font-mono">₹{confirmedBooking.platformFeeInr}</span>
+                  </div>
+                  <div className="flex justify-between text-[#4B5563]">
+                    <span>GST (18%)</span>
+                    <span className="font-mono">₹{confirmedBooking.gstInr}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-black/[0.08] pt-1.5 font-mono text-xs font-bold text-[#047857]">
+                    <span>Total Deducted</span>
+                    <span>₹{confirmedBooking.totalAmountInr}</span>
+                  </div>
+                  {wallet && (
+                    <div className="flex justify-between font-mono text-xs font-bold text-[#111827]">
+                      <span>Remaining Wallet Balance</span>
+                      <span>₹{wallet.balanceInr}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/75 p-3.5 text-xs text-indigo-950">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <ShieldCheck className="h-4 w-4 shrink-0 text-[#4338CA]" />
+                    <span>Entry QR Stored in Active Bookings</span>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-indigo-900">
+                    For security, your Entry QR Code stays hidden until you open{' '}
+                    <strong>Booking History &rarr; Show QR Code</strong>. If no attendant is at the
+                    gate, you can also scan the wall QR placard using <strong>Scan Wall QR</strong>.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 pt-1 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const booked = confirmedBooking;
+                      setSelectedFacilityId(booked.facilityId);
+                      setBookedNavigationTarget({
+                        bookingId: booked.id,
+                        facilityId: booked.facilityId,
+                        spaceCode: booked.spaceCode,
+                      });
+                      setMapDirectionsActive(true);
+                      setCheckoutModalOpen(false);
+                      setConfirmedBooking(null);
+                    }}
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#1A73E8] px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:brightness-110"
+                  >
+                    <MapPin className="h-3.5 w-3.5" />
+                    <span>Get Directions on Map</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCheckoutModalOpen(false);
+                      setConfirmedBooking(null);
+                      onNavigateDashboard();
+                    }}
+                    className="flex-1 rounded-xl border border-black/[0.12] bg-[#F8F7F4] px-4 py-2.5 text-xs font-bold text-[#111827] hover:bg-black/[0.04]"
+                  >
+                    Go to Active Bookings
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
         ) : (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-3 sm:p-4 backdrop-blur-sm"
@@ -1633,7 +1778,11 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                       <ShieldCheck className="h-4 w-4 text-[#047857]" />
                     )}
                     <span>
-                      {verifying ? 'Checking Spot & Rules...' : 'Spot Verified & Available'}
+                      {verifyError
+                        ? 'Verification Interrupted'
+                        : verifying
+                        ? 'Checking Spot & Rules...'
+                        : 'Spot Verified & Available'}
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-[#374151]">{supervisorNote.text}</p>
@@ -1710,10 +1859,45 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                     {targetBay.lateArrivalSummary}
                   </div>
                 )}
-                <div className="flex justify-between border-t border-black/[0.08] pt-2 text-sm font-bold text-[#111827]">
-                  <span>Total Amount (incl. taxes)</span>
-                  <span className="font-mono tabular-nums">₹{targetBay.totalQuoteInr}</span>
-                </div>
+                {(() => {
+                  const hours =
+                    targetBay.durationHours ??
+                    Math.max(0.5, (activeSlot.endMin - activeSlot.startMin) / 60);
+                  const base =
+                    targetBay.baseAmountInr ?? Math.round(hours * targetBay.hourlyPriceInr);
+                  const fee =
+                    targetBay.platformFeeInr ?? Math.max(10, Math.round(base * 0.1));
+                  const gst = targetBay.gstInr ?? Math.round((base + fee) * 0.18);
+                  const total = base + fee + gst;
+                  return (
+                    <div className="space-y-1.5 border-t border-black/[0.08] pt-2.5">
+                      <div className="text-[11px] font-bold uppercase tracking-wide text-[#4B5563]">
+                        Price Breakdown
+                      </div>
+                      <div className="flex justify-between text-[#374151]">
+                        <span>
+                          Parking Charge ({Number.isInteger(hours) ? hours : hours.toFixed(1)}h × ₹
+                          {targetBay.hourlyPriceInr}/hr)
+                        </span>
+                        <span className="font-mono font-semibold text-[#111827]">₹{base}</span>
+                      </div>
+                      <div className="flex justify-between text-[#374151]">
+                        <span>Service &amp; Platform Fee (10%, min ₹10)</span>
+                        <span className="font-mono font-semibold text-[#111827]">₹{fee}</span>
+                      </div>
+                      <div className="flex justify-between text-[#374151]">
+                        <span>GST (18% on Parking + Service Fee)</span>
+                        <span className="font-mono font-semibold text-[#111827]">₹{gst}</span>
+                      </div>
+                      <div className="flex justify-between border-t border-dashed border-black/[0.12] pt-2 text-sm font-bold text-[#111827]">
+                        <span>
+                          Total (₹{base} + ₹{fee} + ₹{gst})
+                        </span>
+                        <span className="font-mono tabular-nums">₹{total}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 {wallet && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-black/[0.08] bg-white px-3 py-2 text-xs">
                     <span className="text-[#374151]">
@@ -1756,42 +1940,16 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                     Boolean(wallet?.bookingRestricted) ||
                     (wallet ? wallet.balanceInr < targetBay.totalQuoteInr : false)
                   }
-                  onClick={() => void handleConfirmAndPay('wallet')}
+                  onClick={() => void handleConfirmAndPay()}
                   className="flex-1 rounded-xl bg-[#047857] px-4 py-2.5 text-xs font-bold text-white shadow-sm transition-all hover:bg-[#065F46] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {confirming
-                    ? 'Settling...'
-                    : `Pay from Prepaid Wallet · ₹${targetBay.totalQuoteInr}`}
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    verifying ||
-                    confirming ||
-                    Boolean(verifyError) ||
-                    Boolean(wallet?.bookingRestricted)
-                  }
-                  onClick={() => void handleConfirmAndPay('gateway')}
-                  className="flex-1 rounded-xl bg-gradient-to-r from-[#E0430D] to-[#C83709] px-4 py-2.5 text-xs font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {verifying
                     ? 'Checking Availability...'
                     : confirming
-                    ? 'Confirming Payment...'
-                    : `Instant Pay & QR · ₹${targetBay.totalQuoteInr}`}
-                </button>
-                <button
-                  type="button"
-                  disabled={
-                    verifying ||
-                    confirming ||
-                    Boolean(verifyError) ||
-                    Boolean(wallet?.bookingRestricted)
-                  }
-                  onClick={() => void handleConfirmAndPay('hold')}
-                  className="rounded-xl border border-black/[0.12] bg-white px-3.5 py-2.5 text-xs font-bold text-[#111827] hover:bg-[#F8F7F4] disabled:opacity-50"
-                >
-                  Hold
+                    ? 'Deducting from Prepaid Wallet...'
+                    : wallet && wallet.balanceInr < targetBay.totalQuoteInr
+                    ? `Add Funds Above to Pay ₹${targetBay.totalQuoteInr} from Wallet`
+                    : `Pay from Prepaid Wallet · ₹${targetBay.totalQuoteInr}`}
                 </button>
               </div>
             </section>

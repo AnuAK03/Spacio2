@@ -5,7 +5,6 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
-  CreditCard,
   FileText,
   History,
   IndianRupee,
@@ -15,6 +14,7 @@ import {
   QrCode,
   Radio,
   RotateCcw,
+  ScanLine,
   ShieldAlert,
   ShieldCheck,
   Star,
@@ -37,11 +37,10 @@ import {
   RefundRecord,
   UserSession,
 } from '../types/parkpool';
-import { buildBookingQrPayload, encodeBookingQrPayload } from '../utils/qrPassGenerator';
-import { BookingConfirmationCard } from './BookingConfirmationCard';
+import { GoogleParkingMap } from './GoogleParkingMap';
 import { LiveTrackingPanel } from './LiveTrackingPanel';
 import { QrCheckinScannerModal } from './QrCheckinScannerModal';
-import { QrCodeDisplay } from './QrCodeDisplay';
+import { WallQrScannerModal } from './WallQrScannerModal';
 
 interface DashboardViewProps {
   user: UserSession;
@@ -56,12 +55,6 @@ interface DashboardViewProps {
   driverProfile?: DriverProfile;
   wallet?: PrepaidWallet;
   lifecycleEvents: AutonomousLifecycleEvent[];
-  onCreatePaymentOrder: (bookingId: string) => Promise<PaymentOrder | null>;
-  onDispatchGatewayWebhook: (
-    orderId: string,
-    outcome: 'payment.succeeded' | 'payment.failed',
-    customEventId?: string
-  ) => Promise<void>;
   onBookingAction: (
     bookingId: string,
     action: 'checkin' | 'checkout' | 'cancel',
@@ -85,7 +78,6 @@ interface DashboardViewProps {
   onMarkNotificationRead: (id: string) => Promise<void>;
   onTopUpWallet: (amountInr: number) => Promise<void>;
   onPayWithWallet: (bookingId: string) => Promise<BookingRecord | null>;
-  onRunLifecycleCheck: (bookingId: string, requestedExtensionMinutes?: number) => Promise<void>;
   onRespondExtensionOffer: (
     bookingId: string,
     offerId: string,
@@ -98,6 +90,14 @@ interface DashboardViewProps {
   ) => Promise<void>;
   onConfirmDeparture: (bookingId: string) => Promise<void>;
   onCompleteClearance: (spaceId: string) => Promise<void>;
+  onVerifyQrCheckin: (
+    bookingId: string,
+    payload: {
+      scannedToken: string;
+      scanMethod: 'camera' | 'upload' | 'gate_placard' | 'manual_token';
+      arrivalMinutesLate: number;
+    }
+  ) => Promise<{ ok: boolean; error?: string }>;
   onFindParking: () => void;
   onOpenProfile: () => void;
 }
@@ -145,8 +145,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   driverProfile,
   wallet,
   lifecycleEvents,
-  onCreatePaymentOrder,
-  onDispatchGatewayWebhook,
   onBookingAction,
   onResolveOverstayImpact,
   onRequestExtension,
@@ -156,18 +154,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onMarkNotificationRead,
   onTopUpWallet,
   onPayWithWallet,
-  onRunLifecycleCheck,
   onRespondExtensionOffer,
   onSendDepartureSignal,
   onConfirmDeparture,
   onCompleteClearance,
+  onVerifyQrCheckin,
   onFindParking,
   onOpenProfile,
 }) => {
   const [navBookingId, setNavBookingId] = useState<string | null>(null);
   const [invoiceBookingId, setInvoiceBookingId] = useState<string | null>(null);
-  const [confirmationBookingId, setConfirmationBookingId] = useState<string | null>(null);
   const [fullQrBookingId, setFullQrBookingId] = useState<string | null>(null);
+  const [wallScannerBookingId, setWallScannerBookingId] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
@@ -223,28 +221,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const unreadNotifications = notifications.filter((n) => !n.read);
   const firstName = user.name.split(' ')[0];
 
-  const handleCheckoutPay = async (
-    bk: BookingRecord,
-    outcome: 'payment.succeeded' | 'payment.failed'
-  ) => {
-    setBusyId(bk.id);
-    try {
-      let orderId = bk.paymentOrderId;
-      if (!orderId) {
-        const order = await onCreatePaymentOrder(bk.id);
-        orderId = order?.id;
-      }
-      if (orderId) {
-        await onDispatchGatewayWebhook(orderId, outcome);
-        if (outcome === 'payment.succeeded') {
-          setConfirmationBookingId(bk.id);
-        }
-      }
-    } finally {
-      setBusyId(null);
-    }
-  };
-
   const handleExtensionClick = async (bkId: string, mins: number) => {
     setBusyId(bkId);
     try {
@@ -271,13 +247,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const invoiceOrder = invoiceBooking?.paymentOrderId
     ? paymentOrders.find((o) => o.id === invoiceBooking.paymentOrderId)
     : undefined;
-  const confirmationBooking = bookings.find((b) => b.id === confirmationBookingId);
-  const confirmationFacility = confirmationBooking
-    ? facilities.find((f) => f.id === confirmationBooking.facilityId)
-    : undefined;
   const fullQrBooking = bookings.find((b) => b.id === fullQrBookingId);
   const fullQrFacility = fullQrBooking
     ? facilities.find((f) => f.id === fullQrBooking.facilityId)
+    : undefined;
+  const wallScannerBooking = bookings.find((b) => b.id === wallScannerBookingId);
+  const wallScannerFacility = wallScannerBooking
+    ? facilities.find((f) => f.id === wallScannerBooking.facilityId)
     : undefined;
 
   return (
@@ -484,9 +460,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onCheckInBooking={async (bookingId) => {
           await onBookingAction(bookingId, 'checkin');
         }}
+        onOpenMapDirections={(bookingId) => setNavBookingId(bookingId)}
       />
 
-      {/* Active Reservations — Entry QR Shown Directly When Confirmed & Paid */}
+      {/* Active Reservations — Entry QR Revealed Only Upon Pressing Show QR Code */}
       <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-5 sm:p-6 shadow-sm backdrop-blur-md">
         <h2 className="mb-4 font-display text-lg font-bold text-[#111827]">
           Upcoming &amp; Active Bookings
@@ -509,13 +486,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const alts = extAlternatives[bk.id] || [];
               const isBusy = busyId === bk.id;
               const statusInfo = friendlyStatusLabel(bk);
-              const showDirectQr =
-                (bk.status === 'confirmed' && bk.paymentStatus === 'paid') ||
-                bk.status === 'checked-in' ||
-                bk.status === 'occupied';
-              const directQrValue = showDirectQr
-                ? encodeBookingQrPayload(buildBookingQrPayload(bk))
-                : '';
 
               return (
                 <div
@@ -575,10 +545,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </span>
                       </div>
 
+                      <div className="rounded-lg border border-black/[0.06] bg-white px-3 py-1.5 text-[11px] text-[#374151]">
+                        <span className="font-semibold text-[#111827]">Price Breakdown: </span>
+                        <span className="font-mono">
+                          Parking ₹{bk.baseAmountInr} + Service Fee ₹{bk.platformFeeInr} + GST ₹
+                          {bk.gstInr} = <strong className="text-[#111827]">₹{bk.totalAmountInr}</strong>
+                        </span>
+                      </div>
+
                       <p className="text-xs text-[#4B5563]">
                         {bk.status === 'held'
-                          ? 'Complete payment within 10 minutes to lock this spot and receive your Entry QR Pass.'
-                          : 'Show your Entry QR Pass at the gate when you arrive. You do not need to scan anything.'}
+                          ? 'Complete payment within 10 minutes to lock this spot.'
+                          : 'Tap Show QR Code when presenting at the gate, or tap Scan Wall QR if no attendant is present.'}
                       </p>
 
                       {bk.overstayStatus === 'flagged_overstay' && (
@@ -928,8 +906,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               onClick={async () => {
                                 setBusyId(bk.id);
                                 try {
-                                  const paid = await onPayWithWallet(bk.id);
-                                  if (paid) setConfirmationBookingId(paid.id);
+                                  await onPayWithWallet(bk.id);
                                 } finally {
                                   setBusyId(null);
                                 }
@@ -939,15 +916,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               <Wallet className="h-3.5 w-3.5" />
                               <span>Pay ₹{bk.totalAmountInr} via Wallet</span>
                             </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => void handleCheckoutPay(bk, 'payment.succeeded')}
-                              className="flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-lg bg-gradient-to-r from-[#E0430D] to-[#C83709] px-4 py-2 text-xs font-bold text-white transition-all hover:brightness-110 disabled:opacity-50"
-                            >
-                              <CreditCard className="h-3.5 w-3.5" />
-                              <span>Pay ₹{bk.totalAmountInr} &amp; Get QR Pass</span>
-                            </button>
+                            {wallet &&
+                              (wallet.bookingRestricted || wallet.balanceInr < bk.totalAmountInr) && (
+                                <button
+                                  type="button"
+                                  disabled={walletBusy}
+                                  onClick={async () => {
+                                    setWalletBusy(true);
+                                    try {
+                                      await onTopUpWallet(500);
+                                    } finally {
+                                      setWalletBusy(false);
+                                    }
+                                  }}
+                                  className="whitespace-nowrap shrink-0 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-[#047857] hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  + Add ₹500 to Wallet
+                                </button>
+                              )}
                           </>
                         )}
 
@@ -956,38 +942,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           bk.status === 'occupied') && (
                           <>
                             {bk.status === 'confirmed' && (
-                              <button
-                                type="button"
-                                onClick={() => void onBookingAction(bk.id, 'checkin')}
-                                className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg bg-[#111827] px-3 py-2 text-xs font-bold text-white hover:bg-black"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                                <span>Arrived &amp; Check In</span>
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void onBookingAction(bk.id, 'checkin')}
+                                  className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg bg-[#111827] px-3 py-2 text-xs font-bold text-white hover:bg-black"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                                  <span>Arrived &amp; Check In</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setWallScannerBookingId(bk.id)}
+                                  className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-indigo-200 bg-indigo-50/75 px-3 py-2 text-xs font-bold text-[#4338CA] hover:bg-indigo-100"
+                                >
+                                  <ScanLine className="h-3.5 w-3.5" />
+                                  <span>Scan Wall QR</span>
+                                </button>
+                              </>
                             )}
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={async () => {
-                                setBusyId(bk.id);
-                                try {
-                                  await onRunLifecycleCheck(bk.id, 30);
-                                } finally {
-                                  setBusyId(null);
-                                }
-                              }}
-                              className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-bold text-[#4338CA] hover:bg-indigo-100 disabled:opacity-50"
-                            >
-                              <Bot className="h-3.5 w-3.5" />
-                              <span>Run Overstay Agent Check</span>
-                            </button>
                             <button
                               type="button"
                               onClick={() => setFullQrBookingId(bk.id)}
                               className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-[#047857] hover:bg-emerald-50"
                             >
                               <QrCode className="h-3.5 w-3.5" />
-                              <span>Full QR Pass</span>
+                              <span>Show QR Code</span>
                             </button>
                             <button
                               type="button"
@@ -1050,32 +1030,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           )}
                       </div>
                     </div>
-
-                    {/* Right: Direct Entry QR Pass (Shown automatically for confirmed & paid bookings) */}
-                    {showDirectQr && (
-                      <div className="flex shrink-0 flex-row items-center gap-3 rounded-xl border border-emerald-200 bg-white p-3 lg:flex-col lg:text-center">
-                        <QrCodeDisplay
-                          value={directQrValue}
-                          size={104}
-                          label={`Entry QR pass for ${bk.id}`}
-                        />
-                        <div className="text-left lg:text-center">
-                          <div className="text-[11px] font-bold text-[#047857]">
-                            Entry QR Pass Ready
-                          </div>
-                          <div className="mt-0.5 font-mono text-[11px] font-semibold text-[#111827]">
-                            PIN: {bk.accessCode}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setFullQrBookingId(bk.id)}
-                            className="mt-1 text-[11px] font-semibold text-[#4338CA] underline"
-                          >
-                            Enlarge QR
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Inline Refund Dispute Box */}
@@ -1227,9 +1181,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           {bk.vehiclePlate ? ` (${bk.vehiclePlate})` : ''}
                         </span>
                         <span aria-hidden="true">·</span>
-                        <span className="font-mono font-bold text-[#111827]">
-                          ₹{bk.totalAmountInr}
+                        <span className="font-mono text-[11px] text-[#374151]">
+                          Parking ₹{bk.baseAmountInr} + Fee ₹{bk.platformFeeInr} + GST ₹{bk.gstInr} ={' '}
+                          <strong className="font-bold text-[#111827]">₹{bk.totalAmountInr}</strong>
                         </span>
+                        {(bk.extraHoursChargedInr || 0) > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono font-semibold text-amber-800">
+                              + Extra hours: ₹{bk.extraHoursChargedInr}
+                              {bk.extraMinutesCharged ? ` (+${bk.extraMinutesCharged}m)` : ''} (Grand Total: ₹
+                              {bk.totalAmountInr + (bk.extraHoursChargedInr || 0)})
+                            </span>
+                          </>
+                        )}
+                        {bk.status === 'completed' &&
+                          typeof bk.remainingBalanceAfterCheckoutInr === 'number' && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-mono font-semibold text-[#047857]">
+                                Remaining Wallet Balance: ₹{bk.remainingBalanceAfterCheckoutInr}
+                              </span>
+                            </>
+                          )}
+                        {bk.status === 'completed' && (bk.unpaidDueAfterCheckoutInr || 0) > 0 && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-mono font-semibold text-rose-700">
+                              Unpaid Due: ₹{bk.unpaidDueAfterCheckoutInr}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -1346,24 +1328,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         )}
       </section>
 
-      {/* Pop-Up Modals (No Scrolling Required) */}
+      {/* Pop-Up Modals */}
       {navBooking && navFacility && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-3 sm:p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/55 p-3 sm:p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label="Gate Directions"
+          aria-label="Live Gate Directions"
         >
-          <div className="relative my-auto w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border-2 border-[#4338CA] bg-white p-5 shadow-2xl">
+          <div className="relative my-auto w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border-2 border-[#1A73E8] bg-white p-4 sm:p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-3 border-b border-black/[0.06] pb-3">
-              <div>
-                <div className="flex items-center gap-2 font-display text-base font-bold text-[#111827]">
-                  <Navigation className="h-4 w-4 text-[#4338CA]" />
-                  <span>Gate Directions · {navBooking.facilityName}</span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 font-display text-base sm:text-lg font-bold text-[#111827]">
+                  <Navigation className="h-4 w-4 shrink-0 text-[#1A73E8]" />
+                  <span className="truncate">Live Directions · {navFacility.name}</span>
                 </div>
                 <p className="mt-0.5 text-xs text-[#4B5563]">
-                  Spot {navBooking.spaceCode} · Gate PIN{' '}
-                  <span className="font-mono font-bold text-[#111827]">
+                  {navFacility.address} ({navFacility.zone}) · Spot{' '}
+                  <strong className="text-[#111827]">{navBooking.spaceCode}</strong> · Gate PIN{' '}
+                  <span className="font-mono font-bold text-[#4338CA]">
                     {navBooking.accessCode}
                   </span>
                 </p>
@@ -1372,32 +1355,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 type="button"
                 onClick={() => setNavBookingId(null)}
                 aria-label="Close directions"
-                className="rounded-lg border border-black/[0.08] p-1.5 text-[#4B5563] hover:text-[#111827]"
+                className="shrink-0 rounded-lg border border-black/[0.08] p-1.5 text-[#4B5563] hover:text-[#111827]"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="mt-4 space-y-3 text-xs">
+
+            <div className="mt-3.5">
+              <GoogleParkingMap
+                compact={true}
+                destinationName={locations[0]?.name || 'Central Bengaluru Hub'}
+                destinationCoords={{
+                  lat: locations[0]?.lat ?? 12.9716,
+                  lng: locations[0]?.lng ?? 77.5946,
+                }}
+                facilities={[navFacility]}
+                selectedFacilityId={navFacility.id}
+                onSelectFacility={() => {}}
+                locations={locations}
+                defaultTravelMode={
+                  navBooking.vehicleLabel.toLowerCase().includes('ather') ||
+                  navBooking.vehicleLabel.toLowerCase().includes('scooter') ||
+                  navBooking.vehicleLabel.toLowerCase().includes('bike')
+                    ? 'TWO_WHEELER'
+                    : 'DRIVING'
+                }
+                directionsActive={true}
+                liveTracking={true}
+                bookedSpotCode={navBooking.spaceCode}
+              />
+            </div>
+
+            <div className="mt-3.5 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
               <div className="rounded-xl bg-[#F8F7F4] p-3.5">
-                <div className="font-semibold text-[#4B5563]">Where to Enter</div>
-                <div className="mt-1 font-bold text-[#111827]">{navFacility.entranceLabel}</div>
-                <div className="mt-1 font-mono text-[#4338CA]">
-                  GPS: {navFacility.entranceLat.toFixed(4)}, {navFacility.entranceLng.toFixed(4)}
+                <div className="font-semibold text-[#4B5563]">Place &amp; Gate Entrance</div>
+                <div className="mt-1 font-bold text-[#111827]">{navFacility.name}</div>
+                <div className="mt-0.5 text-[#374151]">{navFacility.address}</div>
+                <div className="mt-1 font-semibold text-[#C83709]">
+                  Gate: {navFacility.entranceLabel} · Spot {navBooking.spaceCode}
                 </div>
               </div>
               <div className="rounded-xl bg-[#F8F7F4] p-3.5">
-                <div className="font-semibold text-[#4B5563]">Gate Entry Steps</div>
+                <div className="font-semibold text-[#4B5563]">Gate Entry &amp; Walk Path</div>
                 <div className="mt-1 text-[#111827]">{navFacility.accessInstructions}</div>
                 <div className="mt-1 font-semibold text-[#047857]">
-                  {navFacility.accessControl}
+                  {navFacility.accessControl} · {navFacility.walkPathSafety}
                 </div>
-              </div>
-              <div className="rounded-xl bg-[#F8F7F4] p-3.5">
-                <div className="font-semibold text-[#4B5563]">Walking Route</div>
-                <div className="mt-1 font-bold text-[#C83709]">
-                  {navFacility.walkingDistanceM}m ({navFacility.walkingMinutes} min walk)
-                </div>
-                <div className="mt-1 text-[#374151]">{navFacility.walkPathSafety}</div>
               </div>
             </div>
           </div>
@@ -1442,21 +1445,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#4B5563]">Service Fee</span>
+                <span className="text-[#4B5563]">Service &amp; Platform Fee (10%, min ₹10)</span>
                 <span className="font-mono font-semibold text-[#111827]">
                   ₹{invoiceBooking.platformFeeInr}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#4B5563]">Taxes (GST)</span>
+                <span className="text-[#4B5563]">Taxes (GST 18%)</span>
                 <span className="font-mono font-semibold text-[#111827]">
                   ₹{invoiceBooking.gstInr}
                 </span>
               </div>
               <div className="flex justify-between border-t border-black/[0.08] pt-2 text-sm font-bold text-[#111827]">
-                <span>Total Paid</span>
+                <span>
+                  Subtotal Paid (₹{invoiceBooking.baseAmountInr} + ₹{invoiceBooking.platformFeeInr} + ₹
+                  {invoiceBooking.gstInr})
+                </span>
                 <span className="font-mono tabular-nums">₹{invoiceBooking.totalAmountInr}</span>
               </div>
+              {(invoiceBooking.extraHoursChargedInr || 0) > 0 && (
+                <>
+                  <div className="flex justify-between text-xs font-semibold text-amber-800">
+                    <span>
+                      Extra Hours Deducted
+                      {invoiceBooking.extraMinutesCharged
+                        ? ` (+${invoiceBooking.extraMinutesCharged}m)`
+                        : ''}
+                    </span>
+                    <span className="font-mono tabular-nums">
+                      +₹{invoiceBooking.extraHoursChargedInr}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-dashed border-black/[0.1] pt-1.5 text-sm font-bold text-[#111827]">
+                    <span>Total Deducted from Wallet</span>
+                    <span className="font-mono tabular-nums">
+                      ₹{invoiceBooking.totalAmountInr + (invoiceBooking.extraHoursChargedInr || 0)}
+                    </span>
+                  </div>
+                </>
+              )}
+              {typeof invoiceBooking.remainingBalanceAfterCheckoutInr === 'number' && (
+                <div className="flex justify-between text-xs font-bold text-[#047857]">
+                  <span>Remaining Wallet Balance After Checkout</span>
+                  <span className="font-mono tabular-nums">
+                    ₹{invoiceBooking.remainingBalanceAfterCheckoutInr}
+                  </span>
+                </div>
+              )}
               {invoiceOrder && (
                 <div className="pt-1 text-[11px] text-[#047857]">
                   Payment Reference: {invoiceOrder.gatewayOrderRef}
@@ -1467,19 +1502,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {confirmationBooking && (
-        <BookingConfirmationCard
-          booking={confirmationBooking}
-          facility={confirmationFacility}
-          onClose={() => setConfirmationBookingId(null)}
-        />
-      )}
-
       {fullQrBooking && (
         <QrCheckinScannerModal
           booking={fullQrBooking}
           facility={fullQrFacility}
           onClose={() => setFullQrBookingId(null)}
+        />
+      )}
+
+      {wallScannerBooking && (
+        <WallQrScannerModal
+          booking={wallScannerBooking}
+          facility={wallScannerFacility}
+          onVerifyCheckin={onVerifyQrCheckin}
+          onClose={() => setWallScannerBookingId(null)}
         />
       )}
     </div>
