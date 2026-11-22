@@ -5808,6 +5808,195 @@ class ParkPoolStore {
     return facility;
   }
 
+  private resolveVehicleDims(vehicleType: VehicleType): {
+    lengthCm: number;
+    widthCm: number;
+    heightCm: number;
+  } {
+    return vehicleType === 'two_wheeler'
+      ? { lengthCm: 195, widthCm: 76, heightCm: 112 }
+      : vehicleType === 'hatchback'
+      ? { lengthCm: 390, widthCm: 172, heightCm: 155 }
+      : vehicleType === 'sedan'
+      ? { lengthCm: 455, widthCm: 178, heightCm: 150 }
+      : { lengthCm: 465, widthCm: 192, heightCm: 178 };
+  }
+
+  public addDriverVehicle(input: {
+    id?: string;
+    ownerEmail: string;
+    ownerName?: string;
+    wheelerCategory: WheelerCategory;
+    vehicleType: VehicleType;
+    vehicleModel: string;
+    plateNumber: string;
+    isEv: boolean;
+    allowDuplicatePlateUpdate?: boolean;
+  }): { ok: boolean; vehicle?: VehicleProfile; vehicles?: VehicleProfile[]; error?: string } {
+    const cleanEmail = input.ownerEmail.trim().toLowerCase();
+    const cleanModel = input.vehicleModel.trim();
+    const cleanPlate = input.plateNumber.trim().toUpperCase();
+
+    if (!cleanEmail) {
+      return { ok: false, error: 'Authenticated driver email is required.' };
+    }
+    if (cleanModel.length < 2) {
+      return { ok: false, error: 'Please enter a valid vehicle make & model.' };
+    }
+    if (cleanPlate.length < 5) {
+      return { ok: false, error: 'Please enter a valid vehicle registration plate (min 5 characters).' };
+    }
+
+    const effectiveType: VehicleType =
+      input.wheelerCategory === 'two_wheeler'
+        ? 'two_wheeler'
+        : input.vehicleType === 'two_wheeler'
+        ? 'hatchback'
+        : input.vehicleType;
+
+    const dims = this.resolveVehicleDims(effectiveType);
+
+    const existingSamePlate = this.vehicles.find(
+      (v) =>
+        v.ownerEmail?.toLowerCase() === cleanEmail &&
+        v.plateNumber.toUpperCase() === cleanPlate &&
+        (!input.id || v.id !== input.id)
+    );
+    if (existingSamePlate && !input.allowDuplicatePlateUpdate) {
+      return {
+        ok: false,
+        error: `Vehicle ${cleanPlate} is already registered in your garage.`,
+      };
+    }
+
+    const sanitizedRequestedId =
+      input.id && /^[a-zA-Z0-9_-]{1,128}$/.test(input.id.trim())
+        ? input.id.trim()
+        : undefined;
+
+    const existingByIdIdx = sanitizedRequestedId
+      ? this.vehicles.findIndex((v) => v.id === sanitizedRequestedId)
+      : -1;
+
+    const existingSamePlateIdx = existingSamePlate
+      ? this.vehicles.findIndex((v) => v.id === existingSamePlate.id)
+      : -1;
+
+    const vehicleId =
+      sanitizedRequestedId ||
+      existingSamePlate?.id ||
+      `VEH-DRV-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    const label = cleanModel.includes(cleanPlate)
+      ? cleanModel
+      : `${cleanModel} (${cleanPlate})`;
+
+    const vehicleRecord: VehicleProfile = {
+      id: vehicleId,
+      label,
+      plateNumber: cleanPlate,
+      vehicleType: effectiveType,
+      wheelerCategory: input.wheelerCategory,
+      ...dims,
+      isEv: Boolean(input.isEv),
+      ownerEmail: cleanEmail,
+    };
+
+    const targetIdx = existingByIdIdx >= 0 ? existingByIdIdx : existingSamePlateIdx;
+    if (targetIdx >= 0) {
+      this.vehicles[targetIdx] = vehicleRecord;
+    } else {
+      this.vehicles.unshift(vehicleRecord);
+    }
+
+    const profile = this.driverProfiles.find(
+      (p) => p.email.toLowerCase() === cleanEmail
+    );
+    if (profile && !this.vehicles.some((v) => v.id === profile.registeredVehicleId)) {
+      profile.registeredVehicleId = vehicleRecord.id;
+    }
+
+    this.addAudit(
+      input.ownerName || cleanEmail,
+      'DRIVER_VEHICLE_ADDED',
+      `Added vehicle ${label} (${input.wheelerCategory})`
+    );
+
+    const ownedVehicles = this.vehicles.filter(
+      (v) => v.ownerEmail?.toLowerCase() === cleanEmail
+    );
+    return { ok: true, vehicle: vehicleRecord, vehicles: ownedVehicles };
+  }
+
+  public removeDriverVehicle(
+    vehicleId: string,
+    ownerEmail: string
+  ): { ok: boolean; nextActiveVehicleId?: string; vehicles?: VehicleProfile[]; error?: string } {
+    const cleanEmail = ownerEmail.trim().toLowerCase();
+    const idx = this.vehicles.findIndex((v) => v.id === vehicleId);
+    if (idx < 0) {
+      return { ok: false, error: 'Vehicle not found.' };
+    }
+    const target = this.vehicles[idx];
+    if (!target.ownerEmail || target.ownerEmail.toLowerCase() !== cleanEmail) {
+      return { ok: false, error: 'You can only remove vehicles registered to your account.' };
+    }
+
+    this.vehicles.splice(idx, 1);
+
+    const remainingOwned = this.vehicles.filter(
+      (v) => v.ownerEmail?.toLowerCase() === cleanEmail
+    );
+
+    const profile = this.driverProfiles.find(
+      (p) => p.email.toLowerCase() === cleanEmail
+    );
+    if (profile && profile.registeredVehicleId === vehicleId && remainingOwned[0]) {
+      const nextVeh = remainingOwned[0];
+      profile.registeredVehicleId = nextVeh.id;
+      profile.wheelerCategory = nextVeh.wheelerCategory;
+      profile.vehicleType = nextVeh.vehicleType;
+      profile.plateNumber = nextVeh.plateNumber;
+      profile.vehicleModel = nextVeh.label.replace(/\s*\([^)]*\)\s*$/, '').trim() || nextVeh.label;
+      profile.isEv = nextVeh.isEv;
+      profile.updatedAt = new Date().toISOString();
+    }
+
+    this.addAudit(
+      cleanEmail,
+      'DRIVER_VEHICLE_REMOVED',
+      `Removed vehicle ${target.label}`
+    );
+
+    return {
+      ok: true,
+      nextActiveVehicleId: remainingOwned[0]?.id || this.vehicles[0]?.id,
+      vehicles: remainingOwned,
+    };
+  }
+
+  public syncDriverVehicles(
+    ownerEmail: string,
+    incomingVehicles: VehicleProfile[]
+  ): VehicleProfile[] {
+    const cleanEmail = ownerEmail.trim().toLowerCase();
+    for (const v of incomingVehicles) {
+      if (!v || !v.plateNumber || !v.label) continue;
+      const cleanModel = v.label.replace(/\s*\([^)]*\)\s*$/, '').trim() || v.label;
+      this.addDriverVehicle({
+        id: v.id,
+        ownerEmail: cleanEmail,
+        wheelerCategory: v.wheelerCategory === 'two_wheeler' ? 'two_wheeler' : 'four_wheeler',
+        vehicleType: v.vehicleType,
+        vehicleModel: cleanModel,
+        plateNumber: v.plateNumber,
+        isEv: Boolean(v.isEv),
+        allowDuplicatePlateUpdate: true,
+      });
+    }
+    return this.vehicles.filter((v) => v.ownerEmail?.toLowerCase() === cleanEmail);
+  }
+
   public upsertDriverProfile(input: {
     fullName: string;
     email: string;
@@ -5819,6 +6008,7 @@ class ParkPoolStore {
     vehicleModel: string;
     plateNumber: string;
     isEv: boolean;
+    vehicleId?: string;
   }): { ok: boolean; profile?: DriverProfile; vehicle?: VehicleProfile; error?: string } {
     const cleanName = input.fullName.trim();
     const cleanEmail = input.email.trim().toLowerCase();
@@ -5850,24 +6040,39 @@ class ParkPoolStore {
         ? 'hatchback'
         : input.vehicleType;
 
-    const dims =
-      effectiveType === 'two_wheeler'
-        ? { lengthCm: 195, widthCm: 76, heightCm: 112 }
-        : effectiveType === 'hatchback'
-        ? { lengthCm: 390, widthCm: 172, heightCm: 155 }
-        : effectiveType === 'sedan'
-        ? { lengthCm: 455, widthCm: 178, heightCm: 150 }
-        : { lengthCm: 465, widthCm: 192, heightCm: 178 };
+    const dims = this.resolveVehicleDims(effectiveType);
 
     const existingIdx = this.driverProfiles.findIndex(
       (p) => p.email.toLowerCase() === cleanEmail
     );
-    const vehicleId =
-      existingIdx >= 0
-        ? this.driverProfiles[existingIdx].registeredVehicleId
-        : `VEH-DRV-${Date.now().toString(36).toUpperCase()}`;
 
-    const vehicleLabel = `${cleanModel} (${cleanPlate})`;
+    const requestedVehId =
+      input.vehicleId && /^[a-zA-Z0-9_-]{1,128}$/.test(input.vehicleId.trim())
+        ? input.vehicleId.trim()
+        : undefined;
+
+    const existingSamePlate = this.vehicles.find(
+      (v) =>
+        v.ownerEmail?.toLowerCase() === cleanEmail &&
+        v.plateNumber.toUpperCase() === cleanPlate
+    );
+
+    const existingByRequestedId = requestedVehId
+      ? this.vehicles.find(
+          (v) => v.id === requestedVehId && v.ownerEmail?.toLowerCase() === cleanEmail
+        )
+      : undefined;
+
+    const vehicleId =
+      existingByRequestedId?.id ||
+      existingSamePlate?.id ||
+      requestedVehId ||
+      `VEH-DRV-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    const vehicleLabel = cleanModel.includes(cleanPlate)
+      ? cleanModel
+      : `${cleanModel} (${cleanPlate})`;
+
     const vehicleRecord: VehicleProfile = {
       id: vehicleId,
       label: vehicleLabel,

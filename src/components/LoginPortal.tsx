@@ -1,32 +1,29 @@
-import React, { useState } from 'react';
-import { User as FirebaseUser } from 'firebase/auth';
+import React, { useEffect, useState } from 'react';
 import {
+  ArrowLeft,
   ArrowRight,
   Car,
   CheckCircle2,
+  Eye,
+  EyeOff,
   KeyRound,
-  LogOut,
+  Lock,
+  Mail,
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
-import {
-  registerUserAccountInFirestore,
-  signInWithGooglePopup,
-  signOutFirebase,
-  toUserSession,
-} from '../firebase';
 import { UserRole, UserSession } from '../types/parkpool';
 import { LiveMobilityBackground } from './LiveMobilityBackground';
 
 interface LoginPortalProps {
-  pendingFirebaseUser: FirebaseUser | null;
-  isAdminEligible: boolean;
-  onAuthComplete: (user: UserSession) => void;
-  onRegistrationStarted?: () => void;
+  onAuthComplete: (user: UserSession, token: string) => void;
 }
 
+type AuthMode = 'signin' | 'register' | 'forgot' | 'admin';
+type AdminModeState = 'loading' | 'unclaimed' | 'claimed' | 'env';
+
 const ROLE_OPTIONS: Array<{
-  role: UserRole;
+  role: Extract<UserRole, 'driver' | 'host'>;
   title: string;
   subtitle: string;
   defaultOrg: string;
@@ -55,95 +52,251 @@ const ROLE_OPTIONS: Array<{
     accentBorder: 'border-[#047857] ring-1 ring-[#047857]',
     icon: KeyRound,
   },
-  {
-    role: 'admin',
-    title: 'Admin',
-    subtitle: 'Verify, approve & audit',
-    defaultOrg: 'Compliance & Operations Command',
-    accentText: 'text-[#4338CA]',
-    accentBg: 'bg-indigo-50',
-    accentBorder: 'border-[#4338CA] ring-1 ring-[#4338CA]',
-    icon: ShieldCheck,
-  },
 ];
 
-export const LoginPortal: React.FC<LoginPortalProps> = ({
-  pendingFirebaseUser,
-  isAdminEligible,
-  onAuthComplete,
-}) => {
-  const [selectedRole, setSelectedRole] = useState<UserRole>(
-    isAdminEligible ? 'admin' : 'driver'
-  );
-  const [displayName, setDisplayName] = useState(
-    pendingFirebaseUser?.displayName || ''
-  );
-  const [organization, setOrganization] = useState(
-    isAdminEligible ? 'Compliance & Operations Command' : 'Bengaluru Commuter'
-  );
+export const LoginPortal: React.FC<LoginPortalProps> = ({ onAuthComplete }) => {
+  const [authMode, setAuthMode] = useState<AuthMode>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const [selectedRole, setSelectedRole] = useState<Extract<UserRole, 'driver' | 'host'>>('driver');
+  const [displayName, setDisplayName] = useState('');
+  const [organization, setOrganization] = useState('Bengaluru Commuter');
+
+  const [adminMode, setAdminMode] = useState<AdminModeState>('loading');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminName, setAdminName] = useState('ParkPool Operations Admin');
+  const [adminPasscode, setAdminPasscode] = useState('');
+  const [adminConfirmPasscode, setAdminConfirmPasscode] = useState('');
+
+  const [hasRegisteredUsers, setHasRegisteredUsers] = useState<boolean>(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const visibleRoles = ROLE_OPTIONS.filter(
-    (opt) => opt.role !== 'admin' || isAdminEligible
-  );
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/status')
+      .then((res) => res.json())
+      .then((data: { adminMode?: 'env' | 'claimed' | 'unclaimed'; hasRegisteredUsers?: boolean }) => {
+        if (!active) return;
+        setAdminMode(data.adminMode || 'claimed');
+        if (typeof data.hasRegisteredUsers === 'boolean') {
+          setHasRegisteredUsers(data.hasRegisteredUsers);
+          if (!data.hasRegisteredUsers) {
+            setAuthMode('register');
+          }
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  const handleGoogleSignIn = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await signInWithGooglePopup();
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'Google Sign-In could not be completed.';
-      setError(msg.replace(/^Firebase:\s*/i, ''));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleCompleteRegistration = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pendingFirebaseUser) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const account = await registerUserAccountInFirestore({
-        fbUser: pendingFirebaseUser,
-        role: selectedRole,
-        organization,
-        displayName: displayName || pendingFirebaseUser.displayName || undefined,
+  useEffect(() => {
+    if (authMode !== 'admin') return;
+    let active = true;
+    setAdminMode('loading');
+    fetch('/api/auth/status')
+      .then((res) => res.json())
+      .then((data: { adminMode?: 'env' | 'claimed' | 'unclaimed' }) => {
+        if (active) setAdminMode(data.adminMode || 'claimed');
+      })
+      .catch(() => {
+        if (active) setAdminMode('claimed');
       });
-      const idToken = await pendingFirebaseUser.getIdToken();
-      const res = await fetch('/api/auth/session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({
-          role: account.role,
-          organization: account.organization,
-          displayName: account.displayName,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Could not establish verified session.');
-      }
-      onAuthComplete(data.user || toUserSession(account));
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : 'Registration failed. Please try again.'
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
+    return () => {
+      active = false;
+    };
+  }, [authMode]);
 
   const handleSelectRole = (opt: (typeof ROLE_OPTIONS)[number]) => {
     setSelectedRole(opt.role);
     setOrganization(opt.defaultOrg);
+  };
+
+  const switchMode = (next: AuthMode) => {
+    setAuthMode(next);
+    setError(null);
+    setSuccessMsg(null);
+  };
+
+  const handleSignInSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+    setBusy(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Invalid email or password.');
+        return;
+      }
+      onAuthComplete(data.user as UserSession, String(data.token));
+    } catch {
+      setError('Could not connect to authentication server.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    if (!displayName.trim()) {
+      setError('Please enter your full name.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    if (recoveryPhrase.trim().length < 3) {
+      setError('Please enter a security recovery word (at least 3 characters).');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          displayName: displayName.trim(),
+          role: selectedRole,
+          organization: organization.trim(),
+          recoveryPhrase: recoveryPhrase.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Registration failed. Please try again.');
+        return;
+      }
+      onAuthComplete(data.user as UserSession, String(data.token));
+    } catch {
+      setError('Could not connect to authentication server.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    if (!email.trim()) {
+      setError('Please enter your registered email address.');
+      return;
+    }
+    if (recoveryPhrase.trim().length < 3) {
+      setError('Please enter your security recovery word.');
+      return;
+    }
+    if (password.length < 6) {
+      setError('New password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('New passwords do not match.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          recoveryPhrase: recoveryPhrase.trim(),
+          newPassword: password,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Could not reset password.');
+        return;
+      }
+      setSuccessMsg(data.message || 'Password updated successfully. You can now sign in.');
+      setConfirmPassword('');
+      setRecoveryPhrase('');
+    } catch {
+      setError('Could not connect to authentication server.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    if (adminMode === 'unclaimed') {
+      if (!adminEmail.trim()) {
+        setError('Please enter an administrator email.');
+        return;
+      }
+      if (adminPasscode.length < 6) {
+        setError('Admin passcode must be at least 6 characters.');
+        return;
+      }
+      if (adminPasscode !== adminConfirmPasscode) {
+        setError('Admin passcodes do not match.');
+        return;
+      }
+    }
+
+    setBusy(true);
+    try {
+      const endpoint =
+        adminMode === 'unclaimed' ? '/api/auth/admin/claim' : '/api/auth/admin/login';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          adminMode === 'unclaimed'
+            ? {
+                email: adminEmail.trim(),
+                displayName: adminName.trim(),
+                passcode: adminPasscode,
+              }
+            : {
+                email: adminEmail.trim() || undefined,
+                passcode: adminPasscode,
+              }
+        ),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Admin authentication failed.');
+        return;
+      }
+      onAuthComplete(data.user as UserSession, String(data.token));
+    } catch {
+      setError('Could not connect to authentication server.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -178,7 +331,7 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
             </div>
 
             <h1 className="mt-8 font-display text-3xl font-bold leading-snug text-white">
-              Find, Book & Share Verified Parking
+              Find, Book &amp; Share Verified Parking
             </h1>
             <p className="mt-3 text-sm leading-relaxed text-slate-200">
               Connect with verified residential, community, and commercial spaces across
@@ -209,18 +362,24 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
           </div>
         </div>
 
-        {/* Right Firebase Google Auth & Role Onboarding Card */}
+        {/* Right Simple Auth Card */}
         <div className="flex flex-col justify-center p-6 sm:p-8 lg:col-span-6">
-          {!pendingFirebaseUser ? (
-            <div className="space-y-6">
+          {authMode === 'forgot' ? (
+            <div className="space-y-4">
               <div>
+                <button
+                  type="button"
+                  onClick={() => switchMode('signin')}
+                  className="mb-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#4B5563] hover:text-[#111827]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span>Back to Sign In</span>
+                </button>
                 <h2 className="font-display text-2xl font-bold text-[#111827]">
-                  Sign In to ParkPool AI
+                  Reset Your Password
                 </h2>
-                <p className="mt-1.5 text-sm text-[#4B5563]">
-                  Authenticate securely with your Google account. Your role, driver
-                  profile, and verification records are stored in your encrypted account
-                  database.
+                <p className="mt-1 text-xs text-[#4B5563]">
+                  Enter your registered email and security recovery word to set a new password.
                 </p>
               </div>
 
@@ -230,156 +389,618 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
                 </div>
               )}
 
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleGoogleSignIn()}
-                className="flex w-full items-center justify-center gap-3 rounded-xl border border-black/[0.12] bg-white px-5 py-3.5 text-sm font-bold text-[#111827] shadow-sm transition-all hover:border-[#D93F0B] hover:bg-[#FFF9F6] disabled:opacity-60"
-              >
-                <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="#4285F4"
-                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
-                  />
-                </svg>
-                <span>{busy ? 'Connecting with Google...' : 'Continue with Google'}</span>
-                <ArrowRight className="h-4 w-4 text-[#C83709]" />
-              </button>
-
-              <div className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] p-4 text-xs leading-relaxed text-[#4B5563]">
-                New users can choose between a <strong className="text-[#111827]">Driver</strong>{' '}
-                or <strong className="text-[#111827]">Parking Provider</strong> account
-                immediately after Google verification. Returning users are signed in
-                directly to their saved workspace.
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="font-display text-2xl font-bold text-[#111827]">
-                    Complete Your Account
-                  </h2>
-                  <p className="mt-1 text-xs text-[#4B5563]">
-                    Signed in as{' '}
-                    <strong className="text-[#111827]">
-                      {pendingFirebaseUser.email}
-                    </strong>
-                  </p>
+              {successMsg && (
+                <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-xs font-medium text-emerald-900">
+                  <div>{successMsg}</div>
+                  <button
+                    type="button"
+                    onClick={() => switchMode('signin')}
+                    className="font-bold text-[#047857] underline"
+                  >
+                    Sign in now
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void signOutFirebase()}
-                  className="flex items-center gap-1 whitespace-nowrap shrink-0 rounded-lg border border-black/[0.1] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#4B5563] hover:text-rose-600"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                  <span>Switch Account</span>
-                </button>
-              </div>
+              )}
 
-              <div
-                className={`grid grid-cols-1 gap-2.5 ${
-                  visibleRoles.length === 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
-                }`}
-              >
-                {visibleRoles.map((opt) => {
-                  const Icon = opt.icon;
-                  const active = selectedRole === opt.role;
-                  return (
-                    <button
-                      key={opt.role}
-                      type="button"
-                      onClick={() => handleSelectRole(opt)}
-                      className={`rounded-xl border p-3 text-left transition-all ${
-                        active
-                          ? `${opt.accentBorder} ${opt.accentBg}`
-                          : 'border-black/[0.08] bg-[#F8F7F4] hover:border-black/20'
-                      }`}
-                    >
-                      <Icon
-                        className={`h-4 w-4 ${active ? opt.accentText : 'text-[#4B5563]'}`}
-                      />
-                      <div className="mt-2 font-display text-sm font-bold text-[#111827]">
-                        {opt.title}
-                      </div>
-                      <div className="text-[11px] text-[#4B5563]">{opt.subtitle}</div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <form
-                onSubmit={(e) => void handleCompleteRegistration(e)}
-                className="space-y-3.5"
-              >
+              <form onSubmit={(e) => void handleForgotSubmit(e)} className="space-y-3.5">
                 <div>
                   <label
-                    htmlFor="reg-name"
+                    htmlFor="forgot-email"
                     className="mb-1 block text-xs font-semibold text-[#374151]"
                   >
-                    Full Name
+                    Registered Email Address
                   </label>
-                  <input
-                    id="reg-name"
-                    type="text"
-                    required
-                    maxLength={100}
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder={pendingFirebaseUser.displayName || 'Your full name'}
-                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="reg-org"
-                    className="mb-1 block text-xs font-semibold text-[#374151]"
-                  >
-                    {selectedRole === 'host'
-                      ? 'Property / Organization Name'
-                      : 'Commuter Label / Organization'}
-                  </label>
-                  <input
-                    id="reg-org"
-                    type="text"
-                    required
-                    maxLength={120}
-                    value={organization}
-                    onChange={(e) => setOrganization(e.target.value)}
-                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
-                  />
-                </div>
-
-                {error && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                    {error}
+                  <div className="relative">
+                    <Mail className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-[#4B5563]" />
+                    <input
+                      id="forgot-email"
+                      type="email"
+                      required
+                      autoComplete="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2.5 pl-10 pr-3.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                    />
                   </div>
-                )}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="forgot-recovery"
+                    className="mb-1 block text-xs font-semibold text-[#374151]"
+                  >
+                    Security Recovery Word
+                  </label>
+                  <input
+                    id="forgot-recovery"
+                    type="text"
+                    required
+                    minLength={3}
+                    maxLength={120}
+                    value={recoveryPhrase}
+                    onChange={(e) => setRecoveryPhrase(e.target.value)}
+                    placeholder="Word set during registration"
+                    className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="forgot-new-password"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      New Password
+                    </label>
+                    <input
+                      id="forgot-new-password"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Min 6 characters"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="forgot-confirm-password"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      Confirm New Password
+                    </label>
+                    <input
+                      id="forgot-confirm-password"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Re-enter password"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+                </div>
 
                 <button
                   type="submit"
                   disabled={busy}
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#E0430D] to-[#C83709] px-5 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-60"
                 >
-                  <span>
-                    {busy ? 'Creating Account...' : 'Create Account & Enter Workspace'}
-                  </span>
+                  <span>{busy ? 'Updating Password...' : 'Reset Password'}</span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>
+            </div>
+          ) : authMode === 'admin' ? (
+            <div className="space-y-4">
+              <div>
+                <button
+                  type="button"
+                  onClick={() => switchMode('signin')}
+                  className="mb-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#4B5563] hover:text-[#111827]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span>Back to User Sign In</span>
+                </button>
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-[#4338CA]" />
+                  <h2 className="font-display text-2xl font-bold text-[#111827]">
+                    {adminMode === 'unclaimed'
+                      ? 'First-Run Admin Setup'
+                      : 'Admin Operations Sign In'}
+                  </h2>
+                </div>
+                <p className="mt-1 text-xs text-[#4B5563]">
+                  {adminMode === 'unclaimed'
+                    ? 'Claim administrator access by setting an admin passcode for this workspace.'
+                    : 'Enter your administrator passcode to verify and govern ParkPool operations.'}
+                </p>
+              </div>
+
+              {error && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-700">
+                  {error}
+                </div>
+              )}
+
+              {adminMode === 'loading' ? (
+                <div className="rounded-xl border border-black/[0.08] bg-[#F8F7F4] p-4 text-xs text-[#4B5563]">
+                  Checking administrator configuration...
+                </div>
+              ) : (
+                <form onSubmit={(e) => void handleAdminSubmit(e)} className="space-y-3.5">
+                  <div>
+                    <label
+                      htmlFor="admin-email"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      {adminMode === 'unclaimed'
+                        ? 'Administrator Email'
+                        : 'Administrator Email (optional)'}
+                    </label>
+                    <input
+                      id="admin-email"
+                      type="email"
+                      required={adminMode === 'unclaimed'}
+                      value={adminEmail}
+                      onChange={(e) => setAdminEmail(e.target.value)}
+                      placeholder="admin@parkpool.local"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  {adminMode === 'unclaimed' && (
+                    <div>
+                      <label
+                        htmlFor="admin-name"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        Administrator Name
+                      </label>
+                      <input
+                        id="admin-name"
+                        type="text"
+                        required
+                        maxLength={100}
+                        value={adminName}
+                        onChange={(e) => setAdminName(e.target.value)}
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label
+                      htmlFor="admin-passcode"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      {adminMode === 'unclaimed' ? 'Set Admin Passcode' : 'Admin Passcode'}
+                    </label>
+                    <input
+                      id="admin-passcode"
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      value={adminPasscode}
+                      onChange={(e) => setAdminPasscode(e.target.value)}
+                      placeholder="Min 6 characters"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  {adminMode === 'unclaimed' && (
+                    <div>
+                      <label
+                        htmlFor="admin-confirm-passcode"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        Confirm Admin Passcode
+                      </label>
+                      <input
+                        id="admin-confirm-passcode"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        value={adminConfirmPasscode}
+                        onChange={(e) => setAdminConfirmPasscode(e.target.value)}
+                        placeholder="Re-enter passcode"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3.5 py-2.5 text-sm text-[#111827] focus:border-[#4338CA] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#4338CA] to-[#3730A3] px-5 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-60"
+                  >
+                    <span>
+                      {busy
+                        ? 'Authenticating...'
+                        : adminMode === 'unclaimed'
+                        ? 'Claim Admin Access & Enter'
+                        : 'Sign In as Admin'}
+                    </span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </form>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <h2 className="font-display text-2xl font-bold text-[#111827]">
+                  {authMode === 'signin'
+                    ? 'Sign In to ParkPool AI'
+                    : 'Create Your Account'}
+                </h2>
+                <p className="mt-1 text-xs text-[#4B5563]">
+                  {authMode === 'signin'
+                    ? 'Enter your email and password to access your workspace.'
+                    : 'Register as a Driver or Parking Provider in seconds.'}
+                </p>
+              </div>
+
+              <div
+                role="tablist"
+                aria-label="Authentication mode"
+                className="grid grid-cols-2 gap-1.5 rounded-xl border border-black/[0.08] bg-[#F3F2EE] p-1"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={authMode === 'signin'}
+                  onClick={() => switchMode('signin')}
+                  className={`rounded-lg py-2 text-xs font-bold transition-all ${
+                    authMode === 'signin'
+                      ? 'bg-white text-[#111827] shadow-sm'
+                      : 'text-[#4B5563] hover:text-[#111827]'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={authMode === 'register'}
+                  onClick={() => switchMode('register')}
+                  className={`rounded-lg py-2 text-xs font-bold transition-all ${
+                    authMode === 'register'
+                      ? 'bg-white text-[#111827] shadow-sm'
+                      : 'text-[#4B5563] hover:text-[#111827]'
+                  }`}
+                >
+                  Register
+                </button>
+              </div>
+
+              {!hasRegisteredUsers && authMode === 'register' && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-900">
+                  First time here? Create your Driver or Provider account below to get started.
+                </div>
+              )}
+
+              {error && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-700">
+                  <div>{error}</div>
+                  {authMode === 'signin' && (
+                    <button
+                      type="button"
+                      onClick={() => switchMode('register')}
+                      className="mt-1.5 font-bold text-[#C83709] underline"
+                    >
+                      Create a new account &rarr;
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {authMode === 'signin' ? (
+                <form onSubmit={(e) => void handleSignInSubmit(e)} className="space-y-4">
+                  <div>
+                    <label
+                      htmlFor="signin-email"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-[#4B5563]" />
+                      <input
+                        id="signin-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2.5 pl-10 pr-3.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1 flex items-center justify-between">
+                      <label
+                        htmlFor="signin-password"
+                        className="text-xs font-semibold text-[#374151]"
+                      >
+                        Password
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => switchMode('forgot')}
+                        className="text-xs font-semibold text-[#C83709] hover:underline"
+                      >
+                        Forgot password?
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-[#4B5563]" />
+                      <input
+                        id="signin-password"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Enter your password"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2.5 pl-10 pr-10 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((s) => !s)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-2.5 text-[#4B5563] hover:text-[#111827]"
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#E0430D] to-[#C83709] px-5 py-3 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-60"
+                  >
+                    <span>{busy ? 'Signing In...' : 'Sign In'}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+
+                  <div className="rounded-xl border border-black/[0.07] bg-[#F8F7F4] px-4 py-3 text-center text-xs text-[#4B5563]">
+                    New to ParkPool AI?{' '}
+                    <button
+                      type="button"
+                      onClick={() => switchMode('register')}
+                      className="font-bold text-[#C83709] hover:underline"
+                    >
+                      Register an account
+                    </button>
+                  </div>
+
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => switchMode('admin')}
+                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#4B5563] hover:text-[#4338CA]"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>Operations Admin Portal</span>
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={(e) => void handleRegisterSubmit(e)} className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    {ROLE_OPTIONS.map((opt) => {
+                      const Icon = opt.icon;
+                      const active = selectedRole === opt.role;
+                      return (
+                        <button
+                          key={opt.role}
+                          type="button"
+                          onClick={() => handleSelectRole(opt)}
+                          className={`rounded-xl border p-2.5 text-left transition-all ${
+                            active
+                              ? `${opt.accentBorder} ${opt.accentBg}`
+                              : 'border-black/[0.08] bg-[#F8F7F4] hover:border-black/20'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon
+                              className={`h-4 w-4 ${active ? opt.accentText : 'text-[#4B5563]'}`}
+                            />
+                            <span className="font-display text-xs font-bold text-[#111827]">
+                              {opt.title}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-[#4B5563]">{opt.subtitle}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="reg-name"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        Full Name
+                      </label>
+                      <input
+                        id="reg-name"
+                        type="text"
+                        required
+                        maxLength={100}
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        placeholder="Your full name"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="reg-org"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        {selectedRole === 'host' ? 'Organization Name' : 'City / Commuter Label'}
+                      </label>
+                      <input
+                        id="reg-org"
+                        type="text"
+                        required
+                        maxLength={120}
+                        value={organization}
+                        onChange={(e) => setOrganization(e.target.value)}
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="reg-email"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-[#4B5563]" />
+                      <input
+                        id="reg-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2 pl-10 pr-3.5 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="reg-password"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        Password
+                      </label>
+                      <div className="relative">
+                        <Lock className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#4B5563]" />
+                        <input
+                          id="reg-password"
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          autoComplete="new-password"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          placeholder="Min 6 characters"
+                          className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] py-2 pl-9 pr-9 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((s) => !s)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-2.5 top-2.5 text-[#4B5563] hover:text-[#111827]"
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="reg-confirm"
+                        className="mb-1 block text-xs font-semibold text-[#374151]"
+                      >
+                        Confirm Password
+                      </label>
+                      <input
+                        id="reg-confirm"
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        autoComplete="new-password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Re-enter password"
+                        className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="reg-recovery"
+                      className="mb-1 block text-xs font-semibold text-[#374151]"
+                    >
+                      Security Recovery Word (for Forgot Password)
+                    </label>
+                    <input
+                      id="reg-recovery"
+                      type="text"
+                      required
+                      minLength={3}
+                      maxLength={120}
+                      value={recoveryPhrase}
+                      onChange={(e) => setRecoveryPhrase(e.target.value)}
+                      placeholder="e.g. your hometown, pet name, or PIN"
+                      className="w-full rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-sm text-[#111827] focus:border-[#D93F0B] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#E0430D] to-[#C83709] px-5 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:opacity-60"
+                  >
+                    <span>
+                      {busy ? 'Creating Account...' : 'Create Account & Enter Workspace'}
+                    </span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+
+                  <div className="text-center text-xs text-[#4B5563]">
+                    Already registered?{' '}
+                    <button
+                      type="button"
+                      onClick={() => switchMode('signin')}
+                      className="font-bold text-[#C83709] hover:underline"
+                    >
+                      Sign in here
+                    </button>
+                  </div>
+
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => switchMode('admin')}
+                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#4B5563] hover:text-[#4338CA]"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>Operations Admin Portal</span>
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           )}
         </div>

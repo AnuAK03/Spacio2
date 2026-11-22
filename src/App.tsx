@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
   Activity,
   BookOpen,
@@ -20,26 +19,15 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
-import {
-  auth,
-  checkIsAdminAccount,
-  fetchDriverProfileFromFirestore,
-  fetchUserAccount,
-  recordUserLoginTimestamp,
-  saveDriverProfileToFirestore,
-  saveProviderToFirestore,
-  signOutFirebase,
-  subscribeUserAccount,
-  subscribeUserBookings,
-  syncHeldBookingToFirestore,
-  toUserSession,
-  FirestoreBookingDoc,
-} from './firebase';
 import { AdminPortalView, AdminSubTab } from './components/AdminPortalView';
 import { AiAssistantDrawer } from './components/AiAssistantDrawer';
 import { DashboardView } from './components/DashboardView';
 import { DriverGuidelinesView } from './components/DriverGuidelinesView';
-import { DriverProfilePayload, DriverProfileView } from './components/DriverProfileView';
+import {
+  DriverProfilePayload,
+  DriverProfileView,
+  NewDriverVehiclePayload,
+} from './components/DriverProfileView';
 import { DriverSupportView } from './components/DriverSupportView';
 import { FindParkingView } from './components/FindParkingView';
 import { LiveMobilityBackground } from './components/LiveMobilityBackground';
@@ -49,7 +37,6 @@ import {
   BengaluruLocation,
   BookingRecord,
   DetailedProviderType,
-  DriverProfile,
   ExtensionAlternative,
   IncidentRecord,
   OperationalCheckRecord,
@@ -78,14 +65,10 @@ type AppTab =
   | 'admin-ops';
 
 export default function App() {
-  const [authReady, setAuthReady] = useState(false);
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [isAdminEligible, setIsAdminEligible] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserSession | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>('find');
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
-  const [firestoreBookings, setFirestoreBookings] = useState<FirestoreBookingDoc[]>([]);
-  const [firestoreDriverProfile, setFirestoreDriverProfile] = useState<DriverProfile | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>('VEH-SUV-01');
   const [userWallet, setUserWallet] = useState<PrepaidWallet | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -99,154 +82,25 @@ export default function App() {
     }, 5500);
   }, []);
 
-  const syncServerSession = useCallback(
-    async (fbUser: FirebaseUser, session: UserSession): Promise<UserSession> => {
-      const idToken = await fbUser.getIdToken();
-      const res = await fetch('/api/auth/session', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({
-          role: session.role,
-          organization: session.organization,
-          displayName: session.name,
-        }),
-      });
-      if (!res.ok) return session;
-      const data = await res.json();
-      return data.user || session;
-    },
-    []
-  );
-
-  useEffect(() => {
-    let active = true;
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (!active) return;
-      setFirebaseUser(fbUser);
-      if (!fbUser) {
-        setUser(null);
-        setFirestoreDriverProfile(null);
-        setIsAdminEligible(false);
-        setAuthReady(true);
-        return;
-      }
-
-      try {
-        const [adminEligible, existingAccount, savedDriverProfile] = await Promise.all([
-          checkIsAdminAccount(fbUser),
-          fetchUserAccount(fbUser.uid),
-          fetchDriverProfileFromFirestore(fbUser.uid).catch(() => null),
-        ]);
-        if (!active) return;
-        setIsAdminEligible(adminEligible);
-        if (savedDriverProfile) {
-          setFirestoreDriverProfile(savedDriverProfile);
-        }
-
-        if (existingAccount) {
-          const updatedAccount = await recordUserLoginTimestamp(fbUser, existingAccount);
-          const session = await syncServerSession(fbUser, toUserSession(updatedAccount));
-          if (!active) return;
-          setUser(session);
-          if (savedDriverProfile && session.role === 'driver') {
-            try {
-              const idToken = await fbUser.getIdToken();
-              const syncRes = await fetch('/api/driver/profile', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${idToken}`,
-                  'x-parkpool-role': session.role,
-                },
-                body: JSON.stringify({
-                  fullName: savedDriverProfile.fullName,
-                  email: savedDriverProfile.email || session.email,
-                  phone: savedDriverProfile.phone,
-                  licenseNumber: savedDriverProfile.licenseNumber,
-                  licenseValidTill: savedDriverProfile.licenseValidTill,
-                  wheelerCategory: savedDriverProfile.wheelerCategory,
-                  vehicleType: savedDriverProfile.vehicleType,
-                  vehicleModel: savedDriverProfile.vehicleModel,
-                  plateNumber: savedDriverProfile.plateNumber,
-                  isEv: savedDriverProfile.isEv,
-                }),
-              });
-              if (syncRes.ok) {
-                const syncData = await syncRes.json();
-                if (syncData.snapshot) setSnapshot(syncData.snapshot);
-                if (syncData.vehicle?.id) setSelectedVehicleId(syncData.vehicle.id);
-              }
-            } catch {
-              // Keep client profile ready even if backend sync is skipped
-            }
-          }
-          if (session.role === 'host') {
-            setActiveTab('provider-onboarding');
-          } else if (session.role === 'admin') {
-            setActiveTab('admin-providers');
-          } else {
-            setActiveTab('find');
-          }
-        } else {
-          setUser(null);
-        }
-      } catch (err) {
-        console.error('Firebase auth session sync failed:', err);
-        setUser(null);
-      } finally {
-        if (active) setAuthReady(true);
-      }
-    });
-
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [syncServerSession]);
-
-  useEffect(() => {
-    if (!authReady || !firebaseUser || !user) return;
-    const unsubDoc = subscribeUserAccount(firebaseUser.uid, (accountDoc) => {
-      if (!accountDoc) return;
-      const synced = toUserSession(accountDoc);
-      setUser((prev) =>
-        prev &&
-        prev.role === synced.role &&
-        prev.name === synced.name &&
-        prev.organization === synced.organization
-          ? prev
-          : synced
-      );
-    });
-    const unsubBookings = subscribeUserBookings(firebaseUser.uid, (items) => {
-      setFirestoreBookings(items);
-    });
-    return () => {
-      unsubDoc();
-      unsubBookings();
-    };
-  }, [authReady, firebaseUser, user]);
-
   const apiFetch = useCallback(
     async (url: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
       if (!headers.has('Content-Type') && init.body) {
         headers.set('Content-Type', 'application/json');
       }
-      const currentFbUser = auth.currentUser;
-      if (currentFbUser) {
-        const freshToken = await currentFbUser.getIdToken();
-        headers.set('Authorization', `Bearer ${freshToken}`);
+      if (authToken) {
+        headers.set('Authorization', `Bearer ${authToken}`);
       }
-      if (user?.role) {
-        headers.set('x-parkpool-role', user.role);
+      const res = await fetch(url, { ...init, headers });
+      if (res.status === 401 && authToken) {
+        setAuthToken(null);
+        setUser(null);
+        setUserWallet(null);
+        showToast('error', 'Your session expired. Please sign in again.');
       }
-      return fetch(url, { ...init, headers });
+      return res;
     },
-    [user?.role]
+    [authToken, showToast]
   );
 
   const fetchWorkspace = useCallback(async () => {
@@ -254,6 +108,7 @@ export default function App() {
     if (!res.ok) throw new Error('Failed to load ParkPool workspace');
     const data: WorkspaceSnapshot = await res.json();
     setSnapshot(data);
+    return data;
   }, []);
 
   useEffect(() => {
@@ -261,7 +116,7 @@ export default function App() {
   }, [fetchWorkspace]);
 
   useEffect(() => {
-    if (!authReady || !firebaseUser || !user) {
+    if (!authToken || !user) {
       setUserWallet(null);
       return;
     }
@@ -279,10 +134,24 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [authReady, firebaseUser, user, apiFetch]);
+  }, [authToken, user, apiFetch]);
 
-  const handleAuthComplete = (session: UserSession) => {
+  const handleAuthComplete = (session: UserSession, token: string) => {
+    setAuthToken(token);
     setUser(session);
+    if (session.role === 'driver' && snapshot) {
+      const existingProfile = snapshot.driverProfiles.find(
+        (p) => p.email.toLowerCase() === session.email.toLowerCase()
+      );
+      if (existingProfile?.registeredVehicleId) {
+        setSelectedVehicleId(existingProfile.registeredVehicleId);
+      } else {
+        const ownedVehicle = snapshot.vehicles.find(
+          (v) => v.ownerEmail?.toLowerCase() === session.email.toLowerCase()
+        );
+        if (ownedVehicle) setSelectedVehicleId(ownedVehicle.id);
+      }
+    }
     if (session.role === 'host') {
       setActiveTab('provider-onboarding');
     } else if (session.role === 'admin') {
@@ -292,21 +161,17 @@ export default function App() {
     }
   };
 
-  const handleLogout = async () => {
-    await signOutFirebase();
+  const handleLogout = () => {
+    setAuthToken(null);
     setUser(null);
+    setUserWallet(null);
     setAssistantOpen(false);
     setMobileMenuOpen(false);
   };
 
-  const currentDriverProfile =
-    snapshot?.driverProfiles.find(
-      (p) => p.email.toLowerCase() === user?.email.toLowerCase()
-    ) ||
-    (firestoreDriverProfile &&
-    firestoreDriverProfile.email.toLowerCase() === user?.email.toLowerCase()
-      ? firestoreDriverProfile
-      : undefined);
+  const currentDriverProfile = snapshot?.driverProfiles.find(
+    (p) => p.email.toLowerCase() === user?.email.toLowerCase()
+  );
 
   const currentWallet =
     snapshot?.wallets.find((w) => w.driverEmail.toLowerCase() === user?.email.toLowerCase()) ||
@@ -349,9 +214,6 @@ export default function App() {
       return null;
     }
     setSnapshot(data.snapshot);
-    if (firebaseUser && data.booking) {
-      void syncHeldBookingToFirestore(firebaseUser.uid, data.booking).catch(console.error);
-    }
     showToast('success', `Spot ${data.booking.spaceCode} reserved.`);
     return data.booking as BookingRecord;
   };
@@ -438,9 +300,6 @@ export default function App() {
       return;
     }
     setSnapshot(data.snapshot);
-    if (firebaseUser && data.booking) {
-      void syncHeldBookingToFirestore(firebaseUser.uid, data.booking).catch(console.error);
-    }
     showToast('success', `Booking ${bookingId} updated (${data.booking.status}).`);
   };
 
@@ -462,9 +321,6 @@ export default function App() {
       return { ok: false, error: data.error || 'QR check-in verification failed' };
     }
     setSnapshot(data.snapshot);
-    if (firebaseUser && data.booking) {
-      void syncHeldBookingToFirestore(firebaseUser.uid, data.booking).catch(console.error);
-    }
     showToast(
       'success',
       `Gate QR verified! Booking ${bookingId} status is now ${data.booking.status}.`
@@ -573,14 +429,43 @@ export default function App() {
       throw new Error(data.error || 'Could not save driver profile');
     }
     setSnapshot(data.snapshot);
-    if (data.profile) {
-      setFirestoreDriverProfile(data.profile);
-      if (firebaseUser) {
-        void saveDriverProfileToFirestore(firebaseUser.uid, data.profile).catch(console.error);
-      }
+    if (data.vehicle) {
+      setSelectedVehicleId(data.vehicle.id);
     }
-    if (data.vehicle?.id) setSelectedVehicleId(data.vehicle.id);
     showToast('success', `Saved! Active vehicle: ${data.vehicle.label}`);
+  };
+
+  const handleAddVehicle = async (payload: NewDriverVehiclePayload) => {
+    const res = await apiFetch('/api/driver/vehicles', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not add vehicle');
+      throw new Error(data.error || 'Could not add vehicle');
+    }
+    setSnapshot(data.snapshot);
+    if (data.vehicle) {
+      setSelectedVehicleId(data.vehicle.id);
+    }
+    showToast('success', `Added ${data.vehicle.label} to your registered vehicles!`);
+  };
+
+  const handleDeleteVehicle = async (vehicleId: string) => {
+    const res = await apiFetch(`/api/driver/vehicles/${encodeURIComponent(vehicleId)}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast('error', data.error || 'Could not remove vehicle');
+      return;
+    }
+    setSnapshot(data.snapshot);
+    if (selectedVehicleId === vehicleId && data.nextActiveVehicleId) {
+      setSelectedVehicleId(data.nextActiveVehicleId);
+    }
+    showToast('success', 'Vehicle removed from your garage.');
   };
 
   const handleSubmitIncident = async (payload: {
@@ -828,9 +713,6 @@ export default function App() {
       return null;
     }
     setSnapshot(data.snapshot);
-    if (firebaseUser && data.provider) {
-      void saveProviderToFirestore(firebaseUser.uid, data.provider).catch(console.error);
-    }
     showToast(
       'success',
       `Provider ${data.provider.organizationName} registered (${data.provider.verificationStatus}).`
@@ -1136,25 +1018,8 @@ export default function App() {
     showToast('success', `User report ${reportId} updated (${status}).`);
   };
 
-  if (!authReady) {
-    return (
-      <div className="relative flex min-h-screen items-center justify-center bg-[#F8F7F4] text-[#111827]">
-        <LiveMobilityBackground />
-        <div className="relative z-10 rounded-2xl border border-black/[0.08] bg-white/90 px-6 py-4 text-sm font-semibold shadow-lg backdrop-blur-md">
-          Verifying authentication state...
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <LoginPortal
-        pendingFirebaseUser={firebaseUser}
-        isAdminEligible={isAdminEligible}
-        onAuthComplete={handleAuthComplete}
-      />
-    );
+  if (!user || !authToken) {
+    return <LoginPortal onAuthComplete={handleAuthComplete} />;
   }
 
   const navItems: Array<{
@@ -1400,54 +1265,14 @@ export default function App() {
                 onPayWithWallet={handlePayWithWallet}
                 onTopUpWallet={handleTopUpWallet}
                 onNavigateDashboard={() => setActiveTab('dashboard')}
+                onNavigateProfile={() => setActiveTab('profile')}
               />
             )}
 
             {user.role === 'driver' && activeTab === 'dashboard' && (
               <DashboardView
                 user={user}
-                bookings={(() => {
-                  const existingIds = new Set(snapshot.bookings.map((b) => b.id));
-                  const extra = firestoreBookings
-                    .filter((fb) => !existingIds.has(fb.id))
-                    .map((fb) => ({
-                      id: fb.id,
-                      spaceId: fb.spaceId,
-                      facilityId: fb.facilityId,
-                      facilityName: fb.facilityName,
-                      spaceCode: fb.spaceCode,
-                      driverName: user.name,
-                      driverEmail: fb.driverEmail || user.email,
-                      vehicleId: selectedVehicleId,
-                      vehicleLabel: currentDriverProfile?.vehicleModel || 'Registered Vehicle',
-                      vehiclePlate: currentDriverProfile?.plateNumber,
-                      startMin: fb.startMin,
-                      endMin: fb.endMin,
-                      bufferMinutes: 15,
-                      status: fb.status,
-                      baseAmountInr: fb.totalAmountInr,
-                      platformFeeInr: 0,
-                      gstInr: 0,
-                      totalAmountInr: fb.totalAmountInr,
-                      accessCode: 'PKP-SYNC',
-                      entranceLabel: 'Main Facility Gate',
-                      createdAt: new Date().toISOString(),
-                      lateArrivalPolicy: {
-                        graceMinutes: 15,
-                        forfeitAfterMinutes: 40,
-                        summary: '15 min arrival grace policy.',
-                      },
-                      extensionRequests: [],
-                      paymentStatus:
-                        fb.paymentStatus === 'pending_order'
-                          ? ('pending' as const)
-                          : fb.paymentStatus,
-                      refundStatus:
-                        fb.paymentStatus === 'refunded' ? ('refunded' as const) : ('none' as const),
-                      auditTrail: ['Synced from your Cloud Firestore bookings record'],
-                    }));
-                  return [...snapshot.bookings, ...extra];
-                })()}
+                bookings={snapshot.bookings}
                 facilities={snapshot.facilities}
                 spaces={snapshot.spaces}
                 locations={snapshot.locations}
@@ -1497,8 +1322,18 @@ export default function App() {
               <DriverProfileView
                 user={user}
                 existingProfile={currentDriverProfile}
+                vehicles={snapshot.vehicles}
+                selectedVehicleId={selectedVehicleId}
+                onSelectVehicle={(id) => {
+                  setSelectedVehicleId(id);
+                  const chosen = snapshot.vehicles.find((v) => v.id === id);
+                  if (chosen) {
+                    showToast('success', `Active vehicle switched to ${chosen.label}`);
+                  }
+                }}
                 onSaveProfile={handleSaveDriverProfile}
-                onFindParking={() => setActiveTab('find')}
+                onAddVehicle={handleAddVehicle}
+                onDeleteVehicle={handleDeleteVehicle}
               />
             )}
 

@@ -10,9 +10,17 @@ import {
 } from './server/agents';
 import { BENGALURU_LOCATIONS, parseTimeToMinutes, store } from './server/domain';
 import {
+  claimAdminPasscode,
+  getAdminAuthStatus,
+  loginAdminPasscode,
+  loginSimpleUser,
+  registerSimpleUser,
+  resetSimpleUserPassword,
+} from './server/auth';
+import {
   signDocumentAccessToken,
   verifyDocumentAccessToken,
-  verifyFirebaseIdToken,
+  verifySessionToken,
 } from './server/security';
 import {
   AgentStreamEvent,
@@ -27,76 +35,11 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const BOOTSTRAPPED_ADMIN_EMAIL = 'anuak2628@gmail.com';
-const verifiedSessions = new Map<string, UserSession>();
-
-function accentForRole(role: UserRole): string {
-  if (role === 'host') return '#047857';
-  if (role === 'admin') return '#4338CA';
-  return '#C83709';
-}
-
-function resolveVerifiedRole(
-  email: string,
-  emailVerified: boolean,
-  requestedRole: unknown,
-  existingRole?: UserRole
-): UserRole | null {
-  const normalized = requestedRole === 'provider' ? 'host' : requestedRole;
-  const isBootstrappedAdmin =
-    emailVerified && email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
-
-  if (normalized === 'admin') {
-    return isBootstrappedAdmin ? 'admin' : null;
-  }
-  if (normalized === 'host' || normalized === 'driver') {
-    return normalized;
-  }
-  if (existingRole) {
-    return existingRole;
-  }
-  return isBootstrappedAdmin ? 'admin' : 'driver';
-}
-
 async function extractBearerUser(req: Request): Promise<UserSession | null> {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) return null;
-  const idToken = auth.slice(7).trim();
-  const decoded = await verifyFirebaseIdToken(idToken);
-  if (!decoded || !decoded.uid || !decoded.email || !decoded.email_verified) {
-    return null;
-  }
-
-  const existing = verifiedSessions.get(decoded.uid);
-  const headerRole = req.headers['x-parkpool-role'];
-  const role = resolveVerifiedRole(
-    decoded.email,
-    Boolean(decoded.email_verified),
-    headerRole,
-    existing?.role
-  );
-  if (!role) return null;
-
-  const session: UserSession = {
-    id: decoded.uid,
-    name:
-      existing?.name ||
-      (typeof decoded.name === 'string' && decoded.name.trim()
-        ? decoded.name.trim()
-        : decoded.email.split('@')[0]),
-    email: decoded.email,
-    role,
-    organization:
-      existing?.organization ||
-      (role === 'host'
-        ? 'Bengaluru Parking Partner'
-        : role === 'admin'
-        ? 'Compliance & Operations Command'
-        : 'Bengaluru Commuter'),
-    accentHex: accentForRole(role),
-  };
-  verifiedSessions.set(decoded.uid, session);
-  return session;
+  const token = auth.slice(7).trim();
+  return verifySessionToken(token);
 }
 
 async function requireAuth(
@@ -106,7 +49,7 @@ async function requireAuth(
 ): Promise<UserSession | null> {
   const user = await extractBearerUser(req);
   if (!user) {
-    res.status(401).json({ error: 'Authentication required. Please sign in with Google.' });
+    res.status(401).json({ error: 'Authentication required. Please sign in.' });
     return null;
   }
   if (allowedRoles && !allowedRoles.includes(user.role)) {
@@ -135,71 +78,96 @@ async function startServer() {
       aiProvider: 'openrouter',
       openRouterConfigured,
       openRouterModel: process.env.OPENROUTER_MODEL?.trim() || 'openrouter/auto',
-      authProvider: 'firebase-auth-firestore',
+      authProvider: 'parkpool-simple-auth',
       timestamp: new Date().toISOString(),
     });
   });
 
-  app.post('/api/auth/session', async (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Firebase ID token required in Authorization header.' });
-      return;
-    }
-    const decoded = await verifyFirebaseIdToken(authHeader.slice(7).trim());
-    if (!decoded || !decoded.uid || !decoded.email || !decoded.email_verified) {
-      res.status(401).json({ error: 'Invalid or unverified Firebase ID token.' });
-      return;
-    }
+  app.get('/api/auth/status', (_req, res) => {
+    res.json(getAdminAuthStatus());
+  });
 
-    const { role, organization, displayName } = req.body ?? {};
-    const validRole = resolveVerifiedRole(
-      decoded.email,
-      Boolean(decoded.email_verified),
+  app.post('/api/auth/register', (req, res) => {
+    const { email, password, displayName, role, organization, recoveryPhrase } = req.body ?? {};
+    const result = registerSimpleUser({
+      email,
+      password,
+      displayName,
       role,
-      verifiedSessions.get(decoded.uid)?.role
-    );
-    if (!validRole) {
-      res.status(403).json({
-        error: 'Forbidden: Admin access is restricted to verified administrators.',
-      });
+      organization,
+      recoveryPhrase,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
       return;
     }
-
-    const cleanName =
-      typeof displayName === 'string' && displayName.trim()
-        ? displayName.trim().slice(0, 100)
-        : typeof decoded.name === 'string' && decoded.name.trim()
-        ? decoded.name.trim().slice(0, 100)
-        : decoded.email.split('@')[0];
-
-    const defaultOrg =
-      validRole === 'host'
-        ? 'Bengaluru Parking Partner'
-        : validRole === 'admin'
-        ? 'Compliance & Operations Command'
-        : 'Bengaluru Commuter';
-
-    const cleanOrg =
-      typeof organization === 'string' && organization.trim()
-        ? organization.trim().slice(0, 120)
-        : defaultOrg;
-
-    const user: UserSession = {
-      id: decoded.uid,
-      name: cleanName,
-      email: decoded.email,
-      role: validRole,
-      organization: cleanOrg,
-      accentHex: accentForRole(validRole),
-    };
-
-    verifiedSessions.set(decoded.uid, user);
     store.addAudit(
-      'Firebase Auth',
-      'USER_AUTHENTICATED',
-      `${user.name} (${user.email}) authenticated as ${user.role}.`
+      'ParkPool Auth',
+      'USER_REGISTERED',
+      `${result.user.name} (${result.user.email}) registered as ${result.user.role}.`
     );
+    res.status(201).json({ token: result.token, user: result.user });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const { email, password } = req.body ?? {};
+    const result = loginSimpleUser({ email, password });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    store.addAudit(
+      'ParkPool Auth',
+      'USER_AUTHENTICATED',
+      `${result.user.name} (${result.user.email}) signed in as ${result.user.role}.`
+    );
+    res.json({ token: result.token, user: result.user });
+  });
+
+  app.post('/api/auth/reset-password', (req, res) => {
+    const { email, recoveryPhrase, newPassword } = req.body ?? {};
+    const result = resetSimpleUserPassword({ email, recoveryPhrase, newPassword });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    store.addAudit('ParkPool Auth', 'PASSWORD_RESET', `Password updated for ${String(email || '').trim().toLowerCase()}.`);
+    res.json({ ok: true, message: result.message });
+  });
+
+  app.post('/api/auth/admin/claim', (req, res) => {
+    const { email, displayName, passcode } = req.body ?? {};
+    const result = claimAdminPasscode({ email, displayName, passcode });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    store.addAudit(
+      'ParkPool Auth',
+      'ADMIN_PASSCODE_CLAIMED',
+      `First-run administrator claimed by ${result.user.email}.`
+    );
+    res.status(201).json({ token: result.token, user: result.user });
+  });
+
+  app.post('/api/auth/admin/login', (req, res) => {
+    const { email, passcode } = req.body ?? {};
+    const result = loginAdminPasscode({ email, passcode });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    store.addAudit(
+      'ParkPool Auth',
+      'ADMIN_AUTHENTICATED',
+      `Administrator ${result.user.email} signed in.`
+    );
+    res.json({ token: result.token, user: result.user });
+  });
+
+  app.get('/api/auth/me', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
     res.json({ user });
   });
 
@@ -464,6 +432,7 @@ async function startServer() {
       vehicleModel,
       plateNumber,
       isEv,
+      registeredVehicleId,
     } = req.body ?? {};
 
     const result = store.upsertDriverProfile({
@@ -485,6 +454,10 @@ async function startServer() {
       vehicleModel: String(vehicleModel || ''),
       plateNumber: String(plateNumber || ''),
       isEv: Boolean(isEv),
+      vehicleId:
+        typeof registeredVehicleId === 'string' && registeredVehicleId.trim()
+          ? registeredVehicleId.trim()
+          : undefined,
     });
 
     if (!result.ok) {
@@ -495,6 +468,64 @@ async function startServer() {
     res.status(201).json({
       profile: result.profile,
       vehicle: result.vehicle,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/driver/vehicles', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const { wheelerCategory, vehicleType, vehicleModel, plateNumber, isEv } = req.body ?? {};
+
+    const result = store.addDriverVehicle({
+      ownerEmail: user.email,
+      ownerName: user.name,
+      wheelerCategory: wheelerCategory === 'two_wheeler' ? 'two_wheeler' : 'four_wheeler',
+      vehicleType:
+        vehicleType === 'two_wheeler' ||
+        vehicleType === 'hatchback' ||
+        vehicleType === 'sedan' ||
+        vehicleType === 'suv'
+          ? vehicleType
+          : wheelerCategory === 'two_wheeler'
+          ? 'two_wheeler'
+          : 'hatchback',
+      vehicleModel: String(vehicleModel || ''),
+      plateNumber: String(plateNumber || ''),
+      isEv: Boolean(isEv),
+    });
+
+    if (!result.ok) {
+      res.status(400).json({ error: result.error || 'Could not add vehicle' });
+      return;
+    }
+
+    res.status(201).json({
+      vehicle: result.vehicle,
+      vehicles: result.vehicles,
+      snapshot: store.getSnapshot(),
+    });
+  });
+
+  app.post('/api/driver/vehicles/sync', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const rawVehicles = Array.isArray(req.body?.vehicles) ? req.body.vehicles : [];
+    const vehicles = store.syncDriverVehicles(user.email, rawVehicles);
+    res.json({ vehicles, snapshot: store.getSnapshot() });
+  });
+
+  app.delete('/api/driver/vehicles/:vehicleId', async (req, res) => {
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const result = store.removeDriverVehicle(req.params.vehicleId, user.email);
+    if (!result.ok) {
+      res.status(400).json({ error: result.error || 'Could not remove vehicle' });
+      return;
+    }
+    res.json({
+      nextActiveVehicleId: result.nextActiveVehicleId,
+      vehicles: result.vehicles,
       snapshot: store.getSnapshot(),
     });
   });

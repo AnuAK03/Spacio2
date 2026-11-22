@@ -1,43 +1,13 @@
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { getApp, getApps, initializeApp } from 'firebase-admin/app';
-import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
+import { UserRole, UserSession } from '../src/types/parkpool';
 
 const EPHEMERAL_DOC_SECRET = crypto.randomBytes(32).toString('hex');
 const EPHEMERAL_WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
+const EPHEMERAL_QR_SECRET = crypto.randomBytes(32).toString('hex');
+const EPHEMERAL_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
 
-function loadFirebaseProjectId(): string | null {
-  try {
-    const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-    if (!fs.existsSync(configPath)) return null;
-    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { projectId?: string };
-    const projectId = raw.projectId?.trim();
-    if (!projectId || projectId === 'remixed-project-id') return null;
-    return projectId;
-  } catch {
-    return null;
-  }
-}
-
-function getFirebaseAdminAuth() {
-  const projectId = loadFirebaseProjectId();
-  if (!projectId) return null;
-  const adminApp = getApps().length ? getApp() : initializeApp({ projectId });
-  return getAuth(adminApp);
-}
-
-export async function verifyFirebaseIdToken(
-  idToken: string | undefined
-): Promise<DecodedIdToken | null> {
-  if (!idToken || idToken.length < 20) return null;
-  const adminAuth = getFirebaseAdminAuth();
-  if (!adminAuth) return null;
-  try {
-    return await adminAuth.verifyIdToken(idToken);
-  } catch {
-    return null;
-  }
+function getSessionSecret(): string {
+  return process.env.AUTH_SESSION_SECRET?.trim() || EPHEMERAL_SESSION_SECRET;
 }
 
 function getDocSecret(): string {
@@ -48,12 +18,108 @@ function getWebhookSecret(): string {
   return process.env.PAYMENT_WEBHOOK_SECRET?.trim() || EPHEMERAL_WEBHOOK_SECRET;
 }
 
+function getQrSecret(): string {
+  return process.env.QR_SIGNING_SECRET?.trim() || EPHEMERAL_QR_SECRET;
+}
+
 function safeEqualHex(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
   try {
     return crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
   } catch {
     return false;
+  }
+}
+
+export function hashSecret(plain: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(plain, salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+export function verifySecret(plain: string, storedHash: string): boolean {
+  if (!plain || !storedHash || !storedHash.includes(':')) return false;
+  const [salt, expectedHex] = storedHash.split(':');
+  if (!salt || !expectedHex || expectedHex.length !== 128) return false;
+  try {
+    const derived = crypto.scryptSync(plain, salt, 64);
+    const expected = Buffer.from(expectedHex, 'hex');
+    if (derived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function verifyConstantTimeString(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const a = crypto.createHash('sha256').update(provided, 'utf8').digest();
+  const b = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+export function signSessionToken(user: UserSession, ttlSeconds = 86400): string {
+  const now = Date.now();
+  const payload = Buffer.from(
+    JSON.stringify({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      organization: user.organization,
+      accentHex: user.accentHex,
+      iat: now,
+      exp: now + ttlSeconds * 1000,
+    }),
+    'utf8'
+  ).toString('base64url');
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
+  return `${payload}.${sig}`;
+}
+
+export function verifySessionToken(token: string | undefined): UserSession | null {
+  if (!token || !token.includes('.')) return null;
+  const parts = token.trim().split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  if (!payload || !sig) return null;
+  const expectedSig = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(payload)
+    .digest('hex');
+  if (!safeEqualHex(sig, expectedSig)) return null;
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      id?: string;
+      name?: string;
+      email?: string;
+      role?: UserRole;
+      organization?: string;
+      accentHex?: string;
+      exp?: number;
+    };
+    if (!parsed.exp || Date.now() > parsed.exp) return null;
+    if (!parsed.id || !parsed.email || !parsed.name) return null;
+    if (parsed.role !== 'driver' && parsed.role !== 'host' && parsed.role !== 'admin') {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      name: parsed.name,
+      email: parsed.email,
+      role: parsed.role,
+      organization: parsed.organization || 'ParkPool AI',
+      accentHex:
+        parsed.accentHex ||
+        (parsed.role === 'host'
+          ? '#047857'
+          : parsed.role === 'admin'
+          ? '#4338CA'
+          : '#C83709'),
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -115,19 +181,20 @@ export function signWebhookPayload(rawPayload: string): string {
   return crypto.createHmac('sha256', getWebhookSecret()).update(rawPayload).digest('hex');
 }
 
-export function verifyWebhookSignature(rawPayload: string, providedSignature: string | undefined): boolean {
+export function verifyWebhookSignature(
+  rawPayload: string,
+  providedSignature: string | undefined
+): boolean {
   if (!providedSignature) return false;
   const expected = signWebhookPayload(rawPayload);
   return safeEqualHex(providedSignature.trim(), expected);
 }
 
-const EPHEMERAL_QR_SECRET = crypto.randomBytes(32).toString('hex');
-
-function getQrSecret(): string {
-  return process.env.QR_SIGNING_SECRET?.trim() || EPHEMERAL_QR_SECRET;
-}
-
-export function signBookingQrToken(bookingId: string, facilityId: string, accessCode: string): string {
+export function signBookingQrToken(
+  bookingId: string,
+  facilityId: string,
+  accessCode: string
+): string {
   const payload = `PKP-RIDER:${bookingId}:${facilityId}:${accessCode}`;
   const sig = crypto.createHmac('sha256', getQrSecret()).update(payload).digest('hex').slice(0, 16);
   return `${payload}:${sig}`;
@@ -140,7 +207,11 @@ export function verifyBookingQrToken(
   if (parts.length !== 5 || parts[0] !== 'PKP-RIDER') return { valid: false };
   const [, bookingId, facilityId, accessCode, sig] = parts;
   const payload = `PKP-RIDER:${bookingId}:${facilityId}:${accessCode}`;
-  const expected = crypto.createHmac('sha256', getQrSecret()).update(payload).digest('hex').slice(0, 16);
+  const expected = crypto
+    .createHmac('sha256', getQrSecret())
+    .update(payload)
+    .digest('hex')
+    .slice(0, 16);
   if (!safeEqualHex(sig, expected)) return { valid: false };
   return { valid: true, bookingId, facilityId, accessCode };
 }
@@ -159,8 +230,11 @@ export function verifyFacilityGateQrToken(
   if (parts.length !== 4 || parts[0] !== 'PKP-GATE') return { valid: false };
   const [, facilityId, entranceLabel, sig] = parts;
   const payload = `PKP-GATE:${facilityId}:${entranceLabel}`;
-  const expected = crypto.createHmac('sha256', getQrSecret()).update(payload).digest('hex').slice(0, 16);
+  const expected = crypto
+    .createHmac('sha256', getQrSecret())
+    .update(payload)
+    .digest('hex')
+    .slice(0, 16);
   if (!safeEqualHex(sig, expected)) return { valid: false };
   return { valid: true, facilityId, entranceLabel };
 }
-

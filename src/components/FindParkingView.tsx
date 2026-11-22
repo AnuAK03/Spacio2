@@ -8,6 +8,7 @@ import {
   Crosshair,
   Edit3,
   MapPin,
+  Plus,
   Radio,
   Search,
   ShieldAlert,
@@ -61,6 +62,15 @@ interface FindParkingViewProps {
   onPayWithWallet: (bookingId: string) => Promise<BookingRecord | null>;
   onTopUpWallet: (amountInr: number) => Promise<void>;
   onNavigateDashboard: () => void;
+  onNavigateProfile?: () => void;
+}
+
+function extractVehicleModel(v: VehicleProfile): string {
+  const idx = v.label.lastIndexOf('(');
+  if (idx > 0 && v.label.includes(v.plateNumber)) {
+    return v.label.slice(0, idx).trim();
+  }
+  return v.label;
 }
 
 function calcPedestrianMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -140,6 +150,7 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
   onPayWithWallet,
   onTopUpWallet,
   onNavigateDashboard,
+  onNavigateProfile,
 }) => {
   const defaultLoc = locations[0] || {
     id: 'LOC-PHX',
@@ -203,7 +214,7 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileFormError, setProfileFormError] = useState<string | null>(null);
 
-  // Sync saved profile defaults when loaded from Firestore or updated
+  // Sync saved profile defaults when loaded or updated
   useEffect(() => {
     if (!driverProfile) return;
     setFormFullName(driverProfile.fullName);
@@ -215,18 +226,17 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
     setFormVehicleModel(driverProfile.vehicleModel);
     setFormPlateNumber(driverProfile.plateNumber);
     setFormIsEv(driverProfile.isEv);
-    setDraftWheelerCategory(driverProfile.wheelerCategory);
-    setAppliedWheelerCategory(driverProfile.wheelerCategory);
-    if (driverProfile.registeredVehicleId) {
-      setDraftVehicleId(driverProfile.registeredVehicleId);
-    }
   }, [driverProfile]);
 
   useEffect(() => {
-    if (selectedVehicleId) {
-      setDraftVehicleId(selectedVehicleId);
+    if (!selectedVehicleId) return;
+    setDraftVehicleId(selectedVehicleId);
+    const active = vehicles.find((v) => v.id === selectedVehicleId);
+    if (active) {
+      setDraftWheelerCategory(active.wheelerCategory);
+      setAppliedWheelerCategory(active.wheelerCategory);
     }
-  }, [selectedVehicleId]);
+  }, [selectedVehicleId, vehicles]);
 
   useEffect(() => {
     const onOutsideClick = (e: MouseEvent) => {
@@ -262,6 +272,18 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
     return () => window.clearTimeout(timer);
   }, [locationQuery, locationDropdownOpen, locations, draftLocation.name]);
 
+  const registeredVehicles = useMemo(() => {
+    const cleanEmail = user.email.trim().toLowerCase();
+    return vehicles.filter(
+      (v) =>
+        v.ownerEmail?.toLowerCase() === cleanEmail ||
+        (driverProfile?.registeredVehicleId && v.id === driverProfile.registeredVehicleId)
+    );
+  }, [vehicles, user.email, driverProfile?.registeredVehicleId]);
+
+  const headerVehicleOptions =
+    registeredVehicles.length > 0 ? registeredVehicles : vehicles.slice(0, 4);
+
   const filteredDraftVehicles = useMemo(
     () => vehicles.filter((v) => v.wheelerCategory === draftWheelerCategory),
     [vehicles, draftWheelerCategory]
@@ -279,8 +301,16 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
 
   const vehicle =
     filteredAppliedVehicles.find((v) => v.id === selectedVehicleId) ||
+    vehicles.find((v) => v.id === selectedVehicleId) ||
     filteredAppliedVehicles[0] ||
     vehicles[0];
+
+  const handleHeaderVehicleSwitch = (chosen: VehicleProfile) => {
+    onSelectVehicle(chosen.id);
+    setDraftVehicleId(chosen.id);
+    setDraftWheelerCategory(chosen.wheelerCategory);
+    setAppliedWheelerCategory(chosen.wheelerCategory);
+  };
 
   const handleDraftWheelerSwitch = (category: WheelerCategory) => {
     setDraftWheelerCategory(category);
@@ -791,6 +821,131 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {/* FindParkingView Header with Active Vehicle Readout & Visual Vehicle Switcher */}
+      <header className="rounded-2xl border border-black/[0.08] bg-white/95 p-4 shadow-sm backdrop-blur-md sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="font-display text-xl font-bold tracking-tight text-[#111827] sm:text-2xl">
+              Find Verified Parking
+            </h1>
+            <p className="mt-0.5 text-xs text-[#4B5563]">
+              Choose your vehicle for this booking session and inspect compatible Bengaluru bays in real time.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {vehicle && (
+              <div className="flex items-center gap-2.5 rounded-xl border border-[#D93F0B]/30 bg-[#FFF8F5] px-3.5 py-2">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#FFF0EA] text-[#C83709]">
+                  {vehicle.wheelerCategory === 'two_wheeler' ? (
+                    <Bike className="h-4 w-4" />
+                  ) : (
+                    <Car className="h-4 w-4" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#4B5563]">
+                    Active Vehicle
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="truncate font-display text-xs font-bold text-[#111827]">
+                      {extractVehicleModel(vehicle)}
+                    </span>
+                    <span className="font-mono text-xs font-bold uppercase text-[#C83709]">
+                      {vehicle.plateNumber}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {onNavigateProfile && (
+              <button
+                type="button"
+                onClick={onNavigateProfile}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.1] bg-[#F8F7F4] px-3 py-2 text-xs font-bold text-[#111827] transition-colors hover:border-[#D93F0B] hover:text-[#C83709]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{registeredVehicles.length > 0 ? 'Add Vehicle' : 'Register Vehicle'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Visual Registered Vehicle Switcher */}
+        <div className="mt-3.5 border-t border-black/[0.06] pt-3.5">
+          <div className="mb-2 flex items-center justify-between text-[11px] font-semibold text-[#4B5563]">
+            <span>
+              {registeredVehicles.length > 0
+                ? 'Switch Registered Vehicle for Upcoming Booking'
+                : 'Select Vehicle Profile (Register your own in My Profile)'}
+            </span>
+            <span className="tabular-nums text-[#111827]">
+              {headerVehicleOptions.length}{' '}
+              {headerVehicleOptions.length === 1 ? 'vehicle' : 'vehicles'}
+            </span>
+          </div>
+
+          <div
+            role="radiogroup"
+            aria-label="Switch active vehicle for booking"
+            className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
+          >
+            {headerVehicleOptions.map((v) => {
+              const active = v.id === vehicle?.id;
+              const modelName = extractVehicleModel(v);
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => handleHeaderVehicleSwitch(v)}
+                  className={`flex items-center justify-between gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                    active
+                      ? 'border-[#D93F0B] bg-[#FFF0EA] ring-1 ring-[#D93F0B] shadow-sm'
+                      : 'border-black/[0.08] bg-[#F8F7F4] hover:border-[#FDBA74] hover:bg-white'
+                  }`}
+                >
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                        active
+                          ? 'bg-gradient-to-br from-[#E0430D] to-[#C83709] text-white'
+                          : 'border border-black/[0.08] bg-white text-[#374151]'
+                      }`}
+                    >
+                      {v.wheelerCategory === 'two_wheeler' ? (
+                        <Bike className="h-4 w-4" />
+                      ) : (
+                        <Car className="h-4 w-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate font-display text-xs font-bold text-[#111827]">
+                        {modelName}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase text-[#C83709]">
+                        <span>{v.plateNumber}</span>
+                        {v.isEv && (
+                          <Zap
+                            aria-label="Electric Vehicle"
+                            className="h-3 w-3 shrink-0 text-[#047857]"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  {active && (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-[#C83709]" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </header>
+
       {/* Search & Filter Panel with Personal Location Access + Inline Vehicle/License Edit + Search Button */}
       <section className="rounded-2xl border border-black/[0.08] bg-white/92 p-3.5 shadow-sm backdrop-blur-md sm:p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
@@ -1044,7 +1199,8 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
               <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-semibold text-[#047857]">
                 <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-[#047857]" />
                 <span className="truncate">
-                  License: {driverProfile.licenseNumber} · Plate: {driverProfile.plateNumber}
+                  License: {driverProfile.licenseNumber} · Active Plate:{' '}
+                  {vehicle?.plateNumber || driverProfile.plateNumber}
                 </span>
                 <button
                   type="button"
@@ -1527,7 +1683,7 @@ export const FindParkingView: React.FC<FindParkingViewProps> = ({
                 <div className="flex justify-between text-[#374151]">
                   <span>Vehicle Number</span>
                   <span className="font-mono font-semibold text-[#111827]">
-                    {driverProfile?.plateNumber || vehicle.plateNumber}
+                    {vehicle.plateNumber || driverProfile?.plateNumber}
                   </span>
                 </div>
                 {driverProfile && (
